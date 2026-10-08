@@ -20,10 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Robotics",
 ]
 dependencies = [
-    # cv_bridge (acquisition side) requires numpy<2; the dispatch side's
-    # original numpy>=2.4.3 pin was not load-bearing (see obs_builder.py
-    # _read_scalar, written to be numpy>=2-SAFE, not to require it).
-    "numpy>=1.24,<2",
+    "numpy>=1.24",
     "pyyaml>=6.0.3",
     "torch>=2.10.0",
     "h5py>=3.15.1",
@@ -35,10 +32,10 @@ dependencies = [
     "scipy>=1.10.0",
 ]
 # rclpy, tf2_ros, ROS2 message packages (std_msgs, geometry_msgs,
-# sensor_msgs, tf2_msgs), and cv_bridge are intentionally NOT declared here:
+# sensor_msgs, tf2_msgs) are intentionally NOT declared here:
 # they are not pip-installable and must come from a sourced ROS2 (Jazzy)
 # environment, e.g. `sudo apt install ros-jazzy-tf2-ros ros-jazzy-geometry-msgs
-# ros-jazzy-std-msgs ros-jazzy-sensor-msgs ros-jazzy-cv-bridge`.
+# ros-jazzy-std-msgs ros-jazzy-sensor-msgs`.
 
 [project.urls]
 Homepage = "https://github.com/pascd/Relay-D"

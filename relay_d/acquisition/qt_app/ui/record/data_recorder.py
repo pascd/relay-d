@@ -12,7 +12,6 @@ import time
 import json
 from threading import Lock, Thread
 from collections import defaultdict
-from cv_bridge import CvBridge
 from sensor_msgs.msg import Image, CompressedImage, PointCloud2, JointState
 from geometry_msgs.msg import PoseStamped, Twist, TransformStamped
 from std_msgs.msg import String, Float32, Float64, Int32, Bool
@@ -24,7 +23,6 @@ class DataRecorder(Node):
     def __init__(self, yaml_parser):
         super().__init__("data_recorder")
         self.yaml_parser = yaml_parser
-        self.cv_bridge = CvBridge()
         self.data_normalizer = DataNormalizer()
 
         self.recorded_data = defaultdict(list)
@@ -572,7 +570,7 @@ class DataRecorder(Node):
                 }
             else:
                 is_depth = self._modalities.get(container_id) == "depth"
-                cv_image = decode_image(img_msg, self.cv_bridge, is_depth=is_depth)
+                cv_image = decode_image(img_msg, is_depth=is_depth)
                 if cv_image is None:
                     return None
                 return {
@@ -775,7 +773,7 @@ class DataRecorder(Node):
                             msg_data["fields"][slot] = value
                         else:
                             msg_data["fields"][slot] = str(value)
-                    except:
+                    except Exception:
                         msg_data["fields"][slot] = "Error reading field"
 
             return msg_data
@@ -1240,7 +1238,7 @@ class DataRecorder(Node):
                 ]
                 dt = h5py.string_dtype(encoding="utf-8")
                 group.create_dataset("error_data", data=json_data, dtype=dt)
-            except:
+            except Exception:
                 logger.error(f"Failed to save error data for {data_type}")
 
     def _save_metadata_to_h5(self, group):

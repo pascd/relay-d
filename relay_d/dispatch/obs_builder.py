@@ -86,7 +86,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import rclpy
-from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud2
 from tf2_ros import Buffer, TransformListener
@@ -339,7 +338,6 @@ class ObsBuilder(Node):
         self._desync_warned: set          = set()  # throttle: warn once per desynced obs
         self._passthrough_decode_warned: set = set()  # throttle: warn once per bad passthrough source
 
-        self._cv_bridge = CvBridge()  # only used for passthrough (camera) obs
 
         # Classify inputs
         self._tf_inputs: set                      = set()
@@ -702,7 +700,7 @@ class ObsBuilder(Node):
         """
         if isinstance(msg, Image):
             is_depth = self._input_cfg[input_name].get("modality") == "depth"
-            decoded = decode_image(msg, self._cv_bridge, is_depth=is_depth)
+            decoded = decode_image(msg, is_depth=is_depth)
         elif isinstance(msg, PointCloud2):
             decoded = decode_organized_pointcloud(msg)
         else:

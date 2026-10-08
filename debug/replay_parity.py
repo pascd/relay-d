@@ -31,6 +31,7 @@ sys.path) or pass --skip-robomimic.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -39,8 +40,9 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-DATASET_PATH = "/home/pascd/Downloads/dp_training/validation_dataset.h5"
-CKPT_PATH = "/home/pascd/Downloads/dp_training/last.pth"
+# Defaults come from the environment; pass --dataset / --ckpt to override.
+DATASET_PATH = os.environ.get("RELAYD_PARITY_DATASET")
+CKPT_PATH = os.environ.get("RELAYD_PARITY_CKPT")
 
 # Keys this checkpoint's shape_metadata declares (order doesn't matter here —
 # each side re-orders per its own obs_keys / all_obs_keys).
@@ -113,6 +115,8 @@ def main() -> None:
     ap.add_argument("--robomimic-path", default=None, help="path to a robomimic checkout to add to sys.path")
     ap.add_argument("--quiet", action="store_true", help="skip the per-step table, print summary only")
     args = ap.parse_args()
+    if not args.dataset or not args.ckpt:
+        ap.error("--dataset and --ckpt are required (or set RELAYD_PARITY_DATASET / RELAYD_PARITY_CKPT)")
 
     obs, gt_actions = load_demo(args.dataset, args.demo)
     num_steps = args.num_steps if args.num_steps > 0 else gt_actions.shape[0]

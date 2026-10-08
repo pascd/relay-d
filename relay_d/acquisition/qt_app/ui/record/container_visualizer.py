@@ -1,3 +1,4 @@
+from relay_d.utils.ros_media_codec import imgmsg_to_cv2
 import cv2
 import numpy as np
 import json
@@ -21,7 +22,6 @@ from PyQt5.QtCore import QTimer, pyqtSignal, QThread, QMutex, QUrl, Qt
 from PyQt5.QtGui import QPixmap, QImage, QFont
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 from PyQt5.QtMultimediaWidgets import QVideoWidget
-from cv_bridge import CvBridge
 
 
 class ContainerVisualizer:
@@ -30,7 +30,6 @@ class ContainerVisualizer:
     """
 
     def __init__(self):
-        self.cv_bridge = CvBridge()
         self.visualization_timers = {}  # container_id -> QTimer
         self.update_mutex = QMutex()
         self.media_players = {}  # container_id -> QMediaPlayer
@@ -209,7 +208,7 @@ class ContainerVisualizer:
                 cv_image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             else:
                 # Convert regular image message
-                cv_image = self.cv_bridge.imgmsg_to_cv2(image_msg, "bgr8")
+                cv_image = imgmsg_to_cv2(image_msg, "bgr8")
 
             if cv_image is None:
                 return
@@ -742,7 +741,7 @@ class ContainerVisualizer:
                         value = getattr(msg, slot, None)
                         if value is not None:
                             display_text += f"  {slot}: {value}\n"
-                    except:
+                    except Exception:
                         pass
 
             if hasattr(container, "text_data_display"):
@@ -897,7 +896,7 @@ class ContainerVisualizer:
                     temp_file = self.temp_video_files[container_id]
                     try:
                         os.remove(temp_file)
-                    except:
+                    except Exception:
                         pass
                     del self.temp_video_files[container_id]
 
@@ -928,7 +927,7 @@ class ContainerVisualizer:
             for container_id, temp_file in list(self.temp_video_files.items()):
                 try:
                     os.remove(temp_file)
-                except:
+                except Exception:
                     pass
             self.temp_video_files.clear()
 

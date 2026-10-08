@@ -45,7 +45,7 @@ See [Architecture diagrams](#6-architecture-diagrams) for how these pieces fit t
 
 | Package | Used for |
 |---|---|
-| `numpy` (`<2`) | array/data handling; pinned below 2.0 for `cv_bridge` compatibility |
+| `numpy` | array/data handling (NumPy 1.x and 2.x both supported) |
 | `pyyaml` | YAML config parsing |
 | `torch` | policy model loading/inference |
 | `h5py` | HDF5 recording/dataset I/O |

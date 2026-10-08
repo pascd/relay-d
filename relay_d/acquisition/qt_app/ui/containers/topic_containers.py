@@ -394,7 +394,7 @@ class TopicContainers:
                     return None
 
     def _add_to_grid_layout(self, container, grid_layout):
-        """Add container to grid layout in matrix format - FIXED OVERLAPPING ISSUE"""
+        """Add container to grid layout in matrix format"""
         # Get current count of widgets already in the layout
         current_count = 0
 
@@ -480,7 +480,7 @@ class TopicContainers:
 
     def _calculate_grid_dimensions(self, container_count):
         """
-        Calculate optimal grid dimensions based on container count - IMPROVED VERSION
+        Calculate optimal grid dimensions based on container count
 
         Args:
             container_count (int): Number of containers
@@ -532,7 +532,7 @@ class TopicContainers:
 
     def clear_all_containers(self):
         """
-        Remove all containers - IMPROVED VERSION
+        Remove all containers
         """
         logger.info(f"Clearing {len(self.containers)} containers")
 
@@ -853,7 +853,7 @@ class TopicContainers:
 
     def auto_arrange_containers(self):
         """
-        Automatically arrange containers in optimal grid layout - IMPROVED VERSION
+        Automatically arrange containers in optimal grid layout
         """
         if not self.containers:
             return
@@ -989,7 +989,7 @@ class TopicContainers:
             logger.error(f"Error handling window resize: {e}")
 
     def debug_containers(self):
-        """Debug method to log container information - ENHANCED VERSION"""
+        """Debug method to log container information"""
         try:
             logger.info(f"=== Container Debug Info ===")
             logger.info(f"Total containers tracked: {len(self.containers)}")

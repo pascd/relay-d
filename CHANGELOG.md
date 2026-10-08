@@ -33,3 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Shared `relay_d.utils` module (colored console logger, config loader).
 - Packaging via `pyproject.toml` (setuptools backend), with `RelayDApp` and
   `lfd-inference-node` console-script entry points.
+
+## [0.1.1] — 2026-10-8
+
+### Fixed
+- Startup crash under NumPy 2: removed the compiled `cv_bridge` dependency (replaced by pure-numpy `imgmsg_to_cv2`/`cv2_to_imgmsg` in `relay_d.utils.ros_media_codec`) and dropped the `numpy<2` pin.
+- Qt "xcb" plugin abort when the full `opencv-python` wheel is installed: `sanitize_qt_env()` undoes cv2's Qt plugin-path override.

@@ -1,6 +1,10 @@
 import sys
 import os
 
+import cv2  # noqa: F401  (imported first so its Qt env side effects can be undone)
+from relay_d.utils.qt_env import sanitize_qt_env
+sanitize_qt_env()
+
 import rclpy
 from rclpy.node import Node
 
