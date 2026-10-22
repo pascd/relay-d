@@ -1,6 +1,5 @@
 import os
 import glob
-import json
 from threading import Thread
 
 import cv2

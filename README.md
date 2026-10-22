@@ -5,7 +5,7 @@
 
 **Description:** Relay-D is a standalone application for recording synchronized data from multi-modal sensor robotic systems built on ROS 2, and for running the trained policies back on the robot. It streamlines the entire Learning-from-Demonstration (LfD) training loop by facilitating three core tasks: recording robot sensor data, converting it into imitation-learning training datasets, and deploying the trained policy back onto the robot.
 
-- **What it does** — records robot sensor topics and TF to HDF5 per a YAML config, converts recordings into [Robomimic](https://robomimic.github.io/)-format training datasets, and runs a trained LfD policy live on the robot (subscribing to sensor data, running a forward pass, and dispatching the resulting action).
+- **What it does** — records robot sensor topics and TF to HDF5 per a YAML config, converts recordings into [Robomimic](https://robomimic.github.io/) or [LeRobotDataset v3.0](https://huggingface.co/docs/lerobot/main/en/lerobot-dataset-v3) training datasets, and runs a trained LfD policy live on the robot (subscribing to sensor data, running a forward pass, and dispatching the resulting action).
 - **Who it is for** — robotics researchers and engineers building imitation-learning pipelines on ROS 2 (Jazzy) robots.
 - **The problem it solves** — LfD projects usually stitch together bespoke, one-off scripts for recording, format conversion, and inference. Relay-D replaces that with a single, consistent tool covering the whole loop, so datasets recorded for training are guaranteed to be compatible with the config format consumed at inference time.
 
@@ -47,12 +47,10 @@ See [Architecture diagrams](#6-architecture-diagrams) for how these pieces fit t
 |---|---|
 | `numpy` | array/data handling (NumPy 1.x and 2.x both supported) |
 | `pyyaml` | YAML config parsing |
-| `torch` | policy model loading/inference |
 | `h5py` | HDF5 recording/dataset I/O |
 | `opencv-python-headless` | image processing (no GUI/X11 dependency — PyQt5 supplies the GUI) |
-| `pyqt5`, `PyQt5-sip` | `RelayDApp` GUI toolkit |
+| `pyqt5` | `RelayDApp` GUI toolkit |
 | `pyqtgraph` | live plotting widgets in the GUI's review page |
-| `xmltodict` | parsing robot description / URDF-derived XML |
 
 **Optional extra** — `pip install ".[robomimic]"`:
 
@@ -60,12 +58,26 @@ See [Architecture diagrams](#6-architecture-diagrams) for how these pieces fit t
 |---|---|
 | `robomimic` (`>=0.4`) | imitation-learning policy backend. **Must** be installed from an [ARISE-Initiative](https://github.com/ARISE-Initiative/robomimic) source checkout, not plain PyPI (see [Installation](#4-installation)) |
 
+**Optional extra** — `pip install ".[dispatch]"` (needed for `lfd-inference-node` / `InferenceSession`):
+
+| Package | Used for |
+|---|---|
+| `torch` | policy model loading/inference |
+
+**Optional extra** — `pip install ".[scripts]"`: `xmltodict`, used by `scripts/extract_joint_limits.py` to parse URDF XML.
+
+**Optional extra** — `pip install ".[lerobot]"` (only needed to convert recordings to the [LeRobotDataset](https://huggingface.co/docs/lerobot/main/en/lerobot-dataset-v3) format):
+
+| Package | Used for |
+|---|---|
+| `pyarrow` | writing the LeRobot parquet data and metadata files |
+| `av` (PyAV) | encoding camera streams to mp4. Only needed when the recording contains camera images |
+
 **Dev-only** — `pip install --group dev .` / `[dependency-groups] dev`:
 
 | Package | Used for |
 |---|---|
-| `jurigged` | live code-reloading during development |
-| `watchdog` | filesystem-change monitoring used by the dev reload workflow |
+| `pytest` | ROS-free test suite (`pytest` from the repo root) |
 
 ### System / ROS 2 (not pip-installable)
 
@@ -76,7 +88,6 @@ These must come from a sourced ROS 2 Jazzy environment (see [Installation](#4-in
 | `rclpy` | ROS 2 Python client library — nodes, topics, actions |
 | `tf2_ros`, `tf2_msgs` | transform lookups |
 | `geometry_msgs`, `std_msgs`, `sensor_msgs`, `sensor_msgs_py`, `trajectory_msgs`, `builtin_interfaces` | ROS 2 message types |
-| `cv_bridge` | ROS `Image` message ⇄ OpenCV array conversion |
 | `rosidl_runtime_py` | introspecting ROS 2 message/service definitions |
 | `xacro` | resolving robot description macros (used by `scripts/extract_joint_limits.py`) |
 
@@ -95,7 +106,7 @@ Keep dependencies up to date to avoid security vulnerabilities and compatibility
 # 1. Source ROS 2
 source /opt/ros/jazzy/setup.bash
 sudo apt install ros-jazzy-tf2-ros ros-jazzy-geometry-msgs ros-jazzy-std-msgs \
-    ros-jazzy-sensor-msgs ros-jazzy-cv-bridge ros-jazzy-image-transport
+    ros-jazzy-sensor-msgs ros-jazzy-image-transport
 
 # 2. Clone
 cd ~/ros2_ws/src
@@ -103,7 +114,7 @@ git clone git@github.com:pascd/Relay-D.git
 cd Relay-D
 
 # 3. Install
-pip install -e .
+pip install -e ".[dispatch]"   # drop [dispatch] if you only record/convert (no torch)
 
 # Optional: robomimic backend for policy inference.
 # IMPORTANT: PyPI's `robomimic` package only goes up to 0.3.0 and is NOT
@@ -133,7 +144,24 @@ This is a plain pip package (not a colcon/ament package) — no `colcon build` s
 RelayDApp
 ```
 
-Three pages: **Config** (load/validate your YAML), **Record** (start/pause/stop, live sensor feeds), **Post-process** (convert raw recordings to Robomimic format).
+Three pages: **Config** (load/validate your YAML), **Record** (start/pause/stop, live sensor feeds), **Post-process** (convert raw recordings to Robomimic or LeRobot format; a config can be loaded here without the robot running).
+
+### Converting recordings without the GUI
+
+```bash
+# LeRobotDataset v3.0 (needs: pip install ".[lerobot]")
+relay-d-convert --config acquisition_config.yaml --format lerobot \
+    --input recordings/ --output my_lerobot_dataset
+
+# Robomimic HDF5
+relay-d-convert --config acquisition_config.yaml --format robomimic \
+    --input recordings/ --output out/dataset.h5
+```
+
+No ROS or display is needed. `--input` takes `.h5` files and/or directories (searched recursively).
+Format options (robomimic env metadata and training model, LeRobot task, ...) are read from
+`--options` or a `postprocess_config.yaml` next to the config; see
+`relay_d/acquisition/qt_app/ui/config/templates/postprocess_config_template.yaml`. `python scripts/convert_dataset.py` is the same tool.
 
 ### Running inference on the robot
 
@@ -151,11 +179,11 @@ See `relay_d/dispatch/inference_node.py` and `relay_d/dispatch/config_templates/
 
 ```
 relay_d/
-├── utils/              # shared utilities (coloring_logger)
+├── utils/              # shared utilities (colored logger, config loader, TF-topic and ROS media helpers)
 ├── dispatch/           # policy inference + action dispatch (lfd-inference-node)
-└── acquisition/        # RelayDApp GUI + AppAPI (data recording + Robomimic conversion)
-config/                 # top-level YAML config template for acquisition
-scripts/                # standalone dev CLIs (extract_joint_limits.py, reprocess_recorded_data.py)
+└── acquisition/        # RelayDApp GUI + AppAPI (data recording + Robomimic/LeRobot conversion)
+    └── qt_app/ui/config/templates/   # default acquisition + post-process config templates
+scripts/                # standalone CLIs (convert_dataset.py, extract_joint_limits.py, reprocess_recorded_data.py)
 debug/                  # standalone offline dev/parity-testing tools, not part of the installed package
 ```
 
@@ -171,7 +199,8 @@ The full pipeline — from YAML config, through recording and conversion, to tra
 
 ## 7. Known issues
 
-- **No automated test suite for ROS 2-dependent code paths.** CI only runs a dependency-installable-subset build/lint check; changes touching `rclpy`/`tf2_ros`/`cv_bridge` code paths must currently be validated manually (e.g. running `RelayDApp`, recording a demo, converting it). See [CONTRIBUTING.md](CONTRIBUTING.md).
+- **No automated test suite for ROS 2-dependent code paths.** CI builds the package and runs the ROS-free pytest suite (config parsing, dataset conversion); changes touching `rclpy`/`tf2_ros` code paths must currently be validated manually (e.g. running `RelayDApp`, recording a demo, converting it). See [CONTRIBUTING.md](CONTRIBUTING.md).
+- **Checkpoints run code when loaded.** Robomimic `.pth` checkpoints are Python pickles, so loading one executes whatever is inside. Only load checkpoints you trained or trust. TorchScript (`.pt`) files do not have this problem.
 - **`robomimic` version mismatch on PyPI.** The published `robomimic` package on PyPI only goes up to `0.3.0`, which is **not** compatible with checkpoints trained against a newer [ARISE-Initiative](https://github.com/ARISE-Initiative/robomimic) source checkout (this project targets `>=0.4`). You must install your own `robomimic` source checkout in editable mode before installing the `[robomimic]` extra — see [Installation](#4-installation).
 
 ---
@@ -188,7 +217,7 @@ Copyright © 2026 INESC TEC.
 
 - [CHANGELOG.md](CHANGELOG.md) — release history and notable changes
 - [CITATION.cff](CITATION.cff) — citation metadata; use this if you use Relay-D in academic work
-- `relay_d/dispatch/config_templates/*.yaml` and `config/config_template.yaml` — reference config templates for the dispatch and acquisition subsystems
+- `relay_d/dispatch/config_templates/*.yaml` and `relay_d/acquisition/qt_app/ui/config/templates/config_template.yaml` — reference config templates for the dispatch and acquisition subsystems
 - [Architecture diagrams](docs/diagrams/architecture.md) — pipeline and subsystem overview
 
 ---

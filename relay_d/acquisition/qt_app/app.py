@@ -8,9 +8,9 @@ sanitize_qt_env()
 import rclpy
 from rclpy.node import Node
 
-from PyQt5.QtWidgets import QMainWindow, QApplication, QLabel, QTextEdit, QPushButton
+from PyQt5.QtWidgets import QMainWindow, QApplication
 from PyQt5 import uic
-from PyQt5.QtCore import QTimer, QFileSystemWatcher, QObject, pyqtSignal
+from PyQt5.QtCore import QTimer, QFileSystemWatcher
 
 try:
     from relay_d.utils.coloring_logger import logger
@@ -264,15 +264,6 @@ class UI(QMainWindow):
 
         self.load_theme(new_theme)
 
-    def on_menu_toggled(self, expanded):
-        logger.info(f"Menu toggled: {'Expanded' if expanded else 'Collapsed'}")
-        try:
-            if hasattr(self, "page_record") and self.page_record is not None:
-                if hasattr(self.page_record, "on_window_resize"):
-                    self.page_record.on_window_resize()
-        except Exception as e:
-            logger.info(f"Error in menu toggle resize: {e}")
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
 
@@ -289,35 +280,6 @@ class UI(QMainWindow):
                     self.page_record.on_window_resize()
         except Exception as e:
             logger.info(f"Error handling resize: {e}")
-
-    def add_container_layout_controls(self):
-        if hasattr(self, "btn_auto_arrange"):
-            self.btn_auto_arrange.clicked.connect(self.auto_arrange_containers)
-
-        if hasattr(self, "btn_2x1_layout"):
-            self.btn_2x1_layout.clicked.connect(lambda: self.set_forced_layout(2, 1))
-
-        if hasattr(self, "btn_2x2_layout"):
-            self.btn_2x2_layout.clicked.connect(lambda: self.set_forced_layout(2, 2))
-
-        if hasattr(self, "btn_3x2_layout"):
-            self.btn_3x2_layout.clicked.connect(lambda: self.set_forced_layout(3, 2))
-
-    def auto_arrange_containers(self):
-        try:
-            if hasattr(self, "page_record") and self.page_record is not None:
-                if hasattr(self.page_record, "rearrange_containers"):
-                    self.page_record.rearrange_containers()
-        except Exception as e:
-            logger.info(f"Error in auto arrange: {e}")
-
-    def set_forced_layout(self, cols, rows):
-        try:
-            if hasattr(self, "page_record") and self.page_record is not None:
-                if hasattr(self.page_record, "set_container_grid_layout"):
-                    self.page_record.set_container_grid_layout(cols, rows)
-        except Exception as e:
-            logger.info(f"Error in forced layout: {e}")
 
     def closeEvent(self, event):
         """Clean up timers and ROS connections before closing"""

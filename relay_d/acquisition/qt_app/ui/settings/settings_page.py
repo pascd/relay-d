@@ -35,6 +35,7 @@ class SettingsPage:
         return {
             "hdf5_save_folder": "",
             "hdf5_load_folder": "",
+            "config_folder": "",
             "enable_compression": False,
             "freeze_containers": True,
             "theme": "light",
@@ -56,14 +57,6 @@ class SettingsPage:
 
     def get_hdf5_load_folder(self):
         return self.settings.get("hdf5_load_folder", "")
-
-    def set_hdf5_save_folder(self, folder):
-        self.settings["hdf5_save_folder"] = folder
-        self.save_settings()
-
-    def set_hdf5_load_folder(self, folder):
-        self.settings["hdf5_load_folder"] = folder
-        self.save_settings()
 
     def setup_connections(self):
         try:

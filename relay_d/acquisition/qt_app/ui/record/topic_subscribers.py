@@ -1,4 +1,3 @@
-import os
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
@@ -91,36 +90,9 @@ class TopicSubscribers(Node):
         except Exception as e:
             logger.warning(f"Could not initialize TF2: {e}")
 
-        self.msg_type_mapping = {
-            "sensor_msgs/Image": Image,
-            "sensor_msgs/CompressedImage": CompressedImage,
-            "sensor_msgs/PointCloud2": PointCloud2,
-            "sensor_msgs/JointState": JointState,
-            "geometry_msgs/Twist": Twist,
-            "geometry_msgs/PoseStamped": PoseStamped,
-            "geometry_msgs/TransformStamped": TransformStamped,
-            "std_msgs/String": String,
-            "std_msgs/Float32": Float32,
-            "std_msgs/Float64": Float64,
-            "std_msgs/Int32": Int32,
-            "std_msgs/Bool": Bool,
-            "tf2_msgs/TFMessage": TFMessage,
-        }
-
         self._last_log_time = {}
         self._log_interval = 10.0
         logger.info("TopicSubscribers initialized")
-
-    def _list_available_topics(self):
-        try:
-            topics = self.get_topic_names_and_types()
-            logger.info(f"Available topics ({len(topics)}):")
-            for topic, types in topics[:20]:
-                logger.info(f"  {topic} -> {types[0] if types else 'unknown'}")
-            if len(topics) > 20:
-                logger.info(f"  ... and {len(topics) - 20} more")
-        except Exception as e:
-            logger.warning(f"Could not list topics: {e}")
 
     def _get_or_create_tf_buffer(self, tf_topic, tf_static_topic):
         """Return the Buffer feeding from (tf_topic, tf_static_topic), creating
@@ -299,11 +271,6 @@ class TopicSubscribers(Node):
             if topic_path in self.message_type_cache:
                 return self.message_type_cache[topic_path]
 
-            if topic_type_msg in self.msg_type_mapping:
-                msg_class = self.msg_type_mapping[topic_type_msg]
-                self.message_type_cache[topic_path] = msg_class
-                return msg_class
-
             if topic_type_msg and "/" in topic_type_msg:
                 parts = topic_type_msg.split("/")
                 if len(parts) >= 2:
@@ -426,7 +393,7 @@ class TopicSubscribers(Node):
 
             if container_id in self.subscribers:
                 sub = self.subscribers.pop(container_id)
-                if sub != "tf":
+                if sub != "tf_lookup":
                     try:
                         self.destroy_subscription(sub)
                     except Exception as e:
@@ -448,7 +415,7 @@ class TopicSubscribers(Node):
     def clear_all_subscribers(self):
         try:
             for container_id, sub in list(self.subscribers.items()):
-                if sub != "tf":
+                if sub != "tf_lookup":
                     try:
                         self.destroy_subscription(sub)
                     except Exception as e:
@@ -709,10 +676,6 @@ class TopicSubscribers(Node):
         except Exception as e:
             return None
 
-    def get_timestamps(self):
-        with self.data_lock:
-            return dict(self.latest_timestamps)
-
     def get_content_and_timestamps(self):
         """Atomic snapshot of both latest_data and latest_timestamps under a single lock hold.
 
@@ -740,39 +703,6 @@ class TopicSubscribers(Node):
             return self.get_content(container_id)
         return None
 
-    def get_topic_list(self):
-        return [status.get("topic", "") for status in self.subscriber_status.values()]
-
-    def get_all_data_summary(self):
-        summary = {
-            "total_subscribers": len(self.subscribers),
-            "active_subscribers": sum(
-                1
-                for s in self.subscriber_status.values()
-                if s.get("status") == "active"
-            ),
-            "containers_with_data": sum(
-                1 for cid, d in self.latest_data.items() if d is not None
-            ),
-            "total_messages_received": sum(
-                s.get("message_count", 0) for s in self.subscriber_status.values()
-            ),
-            "subscriber_details": [],
-        }
-
-        for container_id, status in self.subscriber_status.items():
-            summary["subscriber_details"].append(
-                {
-                    "container_id": container_id,
-                    "topic": status.get("topic", "unknown"),
-                    "message_count": status.get("message_count", 0),
-                    "has_data": self.has_data(container_id),
-                    "status": status.get("status", "unknown"),
-                }
-            )
-
-        return summary
-
     def get_message_count(self, container_id):
         return self.subscriber_status.get(container_id, {}).get("message_count", 0)
 
@@ -780,6 +710,3 @@ class TopicSubscribers(Node):
         if container_id:
             return self.subscriber_status.get(container_id, {})
         return dict(self.subscriber_status)
-
-    def _get_message_class_from_cache(self, topic_path):
-        return self.message_type_cache.get(topic_path)

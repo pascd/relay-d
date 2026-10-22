@@ -1,9 +1,7 @@
 from relay_d.utils.ros_media_codec import imgmsg_to_cv2
 import cv2
 import numpy as np
-import json
 import time
-import tempfile
 import os
 import rclpy
 import datetime
@@ -17,10 +15,10 @@ from geometry_msgs.msg import PoseStamped, Twist, TransformStamped
 from std_msgs.msg import String, Float32, Float64, Int32, Bool
 from tf2_msgs.msg import TFMessage
 from sensor_msgs_py import point_cloud2
-from PyQt5.QtWidgets import QLabel, QVBoxLayout, QTextEdit, QProgressBar
-from PyQt5.QtCore import QTimer, pyqtSignal, QThread, QMutex, QUrl, Qt
-from PyQt5.QtGui import QPixmap, QImage, QFont
-from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
+from PyQt5.QtWidgets import QLabel
+from PyQt5.QtCore import QTimer, QMutex, Qt
+from PyQt5.QtGui import QPixmap, QImage
+from PyQt5.QtMultimedia import QMediaPlayer
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 
 
@@ -38,8 +36,6 @@ class ContainerVisualizer:
         # Visualization update rate (Hz)
         self.update_rate = config.get("update_rate", 20) or 20
 
-        self.last_msg_time = {}  # container_id -> last header.stamp
-        self.last_msg_arrival = {}  # container_id -> wall-time of last message
         self.framerate_window = {}  # container_id -> list of arrival times (for rolling FPS)
 
         # Connect to config changes for update_rate
@@ -874,42 +870,6 @@ class ContainerVisualizer:
         except Exception as e:
             logger.error(f"Error updating status info: {e}")
 
-    def stop_container_visualization(self, container):
-        """Stop visualization for a container"""
-        try:
-            container_id = getattr(container, "container_id", None)
-            if container_id:
-                # Stop timer
-                if container_id in self.visualization_timers:
-                    timer = self.visualization_timers[container_id]
-                    timer.stop()
-                    del self.visualization_timers[container_id]
-
-                # Stop media player
-                if container_id in self.media_players:
-                    media_player = self.media_players[container_id]
-                    media_player.stop()
-                    del self.media_players[container_id]
-
-                # Clean up temp video files
-                if container_id in self.temp_video_files:
-                    temp_file = self.temp_video_files[container_id]
-                    try:
-                        os.remove(temp_file)
-                    except Exception:
-                        pass
-                    del self.temp_video_files[container_id]
-
-                # Remove overlay label if exists
-                if hasattr(container, "_video_overlay_label"):
-                    container._video_overlay_label.deleteLater()
-                    delattr(container, "_video_overlay_label")
-
-                logger.info(f"Stopped visualization for container {container_id}")
-
-        except Exception as e:
-            logger.error(f"Error stopping container visualization: {e}")
-
     def stop_all_visualizations(self):
         """Stop all container visualizations"""
         try:
@@ -935,13 +895,3 @@ class ContainerVisualizer:
 
         except Exception as e:
             logger.error(f"Error stopping all visualizations: {e}")
-
-    def set_update_rate(self, rate_hz):
-        """Set the visualization update rate"""
-        self.update_rate = max(1, min(rate_hz, 30))  # Limit between 1-30 Hz
-
-        # Update existing timers
-        for timer in self.visualization_timers.values():
-            timer.setInterval(1000 // self.update_rate)
-
-        logger.info(f"Set visualization update rate to {self.update_rate} Hz")

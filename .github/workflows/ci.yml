@@ -1,17 +1,20 @@
 name: CI
 
 # NOTE: This workflow deliberately does NOT install or exercise ROS 2 (rclpy,
-# tf2_ros, cv_bridge, ROS 2 message packages). GitHub-hosted runners don't
-# have ROS 2 preinstalled, and this project has no automated test suite for
-# those code paths yet (see CONTRIBUTING.md). This workflow only sanity-checks
-# that the pip-installable subset of the package builds and installs cleanly,
-# plus a non-blocking lint report.
+# tf2_ros, ROS 2 message packages). GitHub-hosted runners don't have ROS 2
+# preinstalled, so the ROS-dependent code paths (recording, live inference) have
+# no automated tests yet (see CONTRIBUTING.md). It does:
+#   - sanity-check that the pip-installable subset of the package builds and installs,
+#   - run the ROS-free test suite (config parsing, dataset conversion to robomimic
+#     and LeRobot formats, the headless converter, ...),
+#   - produce a non-blocking lint report.
+# Only the `main` branch is covered.
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -37,6 +40,25 @@ jobs:
 
       - name: Install the package (pip-installable dependencies only)
         run: pip install .
+
+  test:
+    name: Tests (ROS-free)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The tests only import the conversion/config code, which needs neither ROS,
+      # Qt nor torch, so install just what they use (pyarrow + av = the lerobot extra).
+      - name: Install test dependencies
+        run: python -m pip install pytest numpy h5py pyyaml scipy pyarrow av
+
+      - name: Run tests
+        run: python -m pytest -q
 
   lint:
     name: Lint (non-blocking)

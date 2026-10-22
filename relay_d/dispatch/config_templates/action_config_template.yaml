@@ -166,6 +166,8 @@ actions:
   #                                           # reached: true bool check
   #     timeout: 15.0
   #     on_timeout: warn
+  #   dedupe: false                          # topic entries are published every tick;
+  #                                           # true = skip when the value is unchanged
 
   robotiq_gripper:
     indices: [7]

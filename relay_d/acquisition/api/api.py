@@ -12,9 +12,9 @@ from ..qt_app.ui.record.topic_subscribers import TopicSubscribers
 from ..qt_app.ui.record.data_recorder import DataRecorder
 from ..qt_app.ui.postprocess.yaml_driven_converter import YAMLDrivenConverter
 from ..qt_app.ui.postprocess.postprocess_config_loader import PostprocessConfigLoader
+from ..qt_app.ui.postprocess.postprocess_options import PostprocessOptions
 from ..qt_app.ui.review.demo_validator import DemoValidator
 from relay_d.utils.coloring_logger import logger
-from ..qt_app.utils.demo_file_ops import delete_demo_file
 
 class ContainerAdapter:
     def __init__(self, data: dict):
@@ -27,7 +27,12 @@ class ContainerAdapter:
 
 
 class AppAPI:
-    def __init__(self, config_path: str, output_dir: Optional[str] = None):
+    def __init__(
+        self,
+        config_path: str,
+        output_dir: Optional[str] = None,
+        postprocess_config_path: Optional[str] = None,
+    ):
         self._rclpy_initialized = False
         try:
             rclpy.init()
@@ -42,6 +47,15 @@ class AppAPI:
         self._yaml_converter = YAMLDrivenConverter(self._config_loader)
         if config_path:
             self._yaml_converter.load_data_config(config_path)
+        # Format options for conversion: explicit path, else a postprocess_config.yaml
+        # next to the acquisition config, else defaults (legacy keys in the config still work).
+        options_path = postprocess_config_path or PostprocessOptions.find_sibling(config_path)
+        if options_path:
+            options, problems = PostprocessOptions.load(options_path)
+            if options is not None:
+                self._yaml_converter.options = options
+            else:
+                logger.error(f"Ignoring postprocess options {options_path}: {'; '.join(problems)}")
 
         if output_dir is None:
             output_dir = os.path.join(os.path.expanduser("~"), "lfd_recordings")
@@ -51,7 +65,6 @@ class AppAPI:
         self._data_recorder.output_directory = output_dir
         self._session_h5_files: list = []
         self._validator = DemoValidator()
-        self._last_validation_results: dict = {}
 
         self._spin_thread = None
         self._should_spin = False
@@ -85,7 +98,6 @@ class AppAPI:
             rclpy.spin_once(self._data_recorder, timeout_sec=0.0)
 
     def start_recording(self, demo_name: Optional[str] = None) -> bool:
-        self.demo_name_ = demo_name
         return self._data_recorder.start_recording(
             self._topic_subscribers, demo_name, flush_stale_data=True
         )
@@ -102,21 +114,10 @@ class AppAPI:
             file_path = self._data_recorder.h5_file_path
             self._session_h5_files.append(file_path)
             try:
-                self._last_validation_results[file_path] = self._validator.validate(file_path)
+                self._validator.validate(file_path)  # logs the result
             except Exception as e:
                 logger.error(f"Error validating recording: {e}")
         return result
-
-    def get_validation_result(self, file_path: str):
-        return self._last_validation_results.get(file_path)
-
-    def delete_recording(self, file_path: str) -> bool:
-        ok = delete_demo_file(file_path)
-        if ok:
-            if file_path in self._session_h5_files:
-                self._session_h5_files.remove(file_path)
-            self._last_validation_results.pop(file_path, None)
-        return ok
 
     def get_recording_status(self) -> dict:
         return {
@@ -126,14 +127,17 @@ class AppAPI:
             "samples": len(self._data_recorder.timestamps),
         }
 
-    def convert_recording_to_dataset(self) -> bool:
+    def convert_recording_to_dataset(self, output_format: str = "robomimic") -> bool:
+        """Convert this session's recordings. `output_format` is "robomimic" (one .h5
+        file) or "lerobot" (a LeRobotDataset v3.0 directory)."""
         try:
             if not self._session_h5_files:
                 logger.warning("No recordings in this session to convert.")
                 return False
-            output_path = os.path.join(self._data_recorder.recorded_data_dir, "combined_dataset.h5")
+            name = "combined_dataset_lerobot" if output_format == "lerobot" else "combined_dataset.h5"
+            output_path = os.path.join(self._data_recorder.recorded_data_dir, name)
             success = self._yaml_converter.convert_multiple_files(
-                "robomimic", self._session_h5_files, output_path
+                output_format, self._session_h5_files, output_path
             )
             if success:
                 logger.info(

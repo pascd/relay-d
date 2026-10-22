@@ -22,13 +22,10 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "pyyaml>=6.0.3",
-    "torch>=2.10.0",
     "h5py>=3.15.1",
     "opencv-python-headless>=4.8.0,<4.13",
     "pyqt5>=5.15.11",
     "pyqtgraph>=0.13.7",
-    "PyQt5-sip>=12.15",
-    "xmltodict",
     "scipy>=1.10.0",
 ]
 # rclpy, tf2_ros, ROS2 message packages (std_msgs, geometry_msgs,
@@ -41,7 +38,7 @@ dependencies = [
 Homepage = "https://github.com/pascd/Relay-D"
 Repository = "https://github.com/pascd/Relay-D"
 Issues = "https://github.com/pascd/Relay-D/issues"
-Changelog = "https://github.com/pascd/Relay-D/blob/master/CHANGELOG.md"
+Changelog = "https://github.com/pascd/Relay-D/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 # PyPI's published `robomimic` only goes up to 0.3.0 and is NOT compatible
@@ -49,16 +46,26 @@ Changelog = "https://github.com/pascd/Relay-D/blob/master/CHANGELOG.md"
 # dispatcher targets >=0.4, e.g. 0.5.0). Install your robomimic source
 # checkout in editable mode BEFORE installing this extra — see README.md.
 robomimic = ["robomimic>=0.4"]
+# LeRobotDataset v3.0 output (parquet + mp4); see postprocess/lerobot_writer.py.
+# Only needed to convert recordings to the LeRobot format.
+# Policy inference (`lfd-inference-node`, `InferenceSession`); not needed to record or convert.
+dispatch = ["torch>=2.10.0"]
+# Only for scripts/extract_joint_limits.py.
+scripts = ["xmltodict"]
+lerobot = ["pyarrow>=15.0", "av>=12.0"]
 
 [dependency-groups]
 dev = [
-    "jurigged>=0.6.1",
-    "watchdog>=6.0.0",
+    "pytest>=8.0",
 ]
 
 [project.scripts]
 lfd-inference-node = "relay_d.dispatch.inference_node:main"
 RelayDApp = "relay_d.acquisition.qt_app.app:main"
+relay-d-convert = "relay_d.acquisition.convert_cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -66,6 +73,7 @@ include = ["relay_d*"]
 
 [tool.setuptools.package-data]
 "relay_d.dispatch" = ["config_templates/*.yaml"]
+"relay_d.acquisition.qt_app.ui.config" = ["templates/*.yaml"]
 "relay_d.acquisition.qt_app" = ["resources/**/*", "resources.qrc"]
 "relay_d.acquisition.qt_app.ui.containers" = ["*.ui"]
 "relay_d.acquisition.qt_app.ui.postprocess.postprocess_configs" = ["*.json", "*.yaml"]

@@ -8,8 +8,7 @@ Supported model types (auto-detected from checkpoint structure):
   bc_mlp       Robomimic BC MLP  — deterministic MLP, obs -> action
   bc_rnn       Robomimic BC RNN  — stateful LSTM; call reset() between episodes
   bc_gmm       Robomimic BC GMM  — Gaussian mixture; returns mean of top component
-  diffusion    Diffusion Policy  — scaffold; subclass to implement denoising loop
-  act          ACT               — scaffold; subclass to implement action chunking
+  diffusion    Diffusion Policy  — robomimic DDPM + 1-D UNet (EMA weights when present)
   torch_script Any model exported with torch.jit.save() — generic obs-concat -> action
 
 Detection priority:
@@ -17,8 +16,7 @@ Detection priority:
   2. Explicit 'model_type' key inside the checkpoint dict
   3. Robomimic weight-key heuristics  (rnn > gmm > mlp)
   4. Diffusion Policy key patterns    (noise_pred_net)
-  5. ACT key patterns                 (model_state_dict + transformer)
-  6. ValueError with instructions
+  5. ValueError with instructions
 
 Override auto-detection by passing model_type= to ModelRunner.
 """
@@ -41,6 +39,9 @@ from relay_d.utils.coloring_logger import logger
 # ============================================================================
 # Abstract base
 # ============================================================================
+
+# Robomimic checkpoints are pickles (they embed a config object), so loading one runs code.
+_PICKLE_WARNING = "Loading a pickled checkpoint runs code from the file: only load checkpoints you trained or trust."
 
 class BasePolicy(abc.ABC):
     """Interface every policy backend must implement."""
@@ -667,9 +668,10 @@ class TorchScriptPolicy(BasePolicy):
 
 class DiffusionPolicy(BasePolicy):
     """
-    Diffusion Policy (Chi et al. 2023) — scaffold.
+    Diffusion Policy (Chi et al. 2023) — abstract base.
 
-    To enable, subclass and implement _build():
+    The concrete robomimic implementation is `_RobomimicDiffusionPolicy`. For another
+    architecture, subclass and implement _build():
 
         class MyDiffusionPolicy(DiffusionPolicy):
             def _build(self, ckpt, device):
@@ -718,64 +720,6 @@ class DiffusionPolicy(BasePolicy):
 
     def get_action(self, obs_dict: Dict[str, np.ndarray]) -> np.ndarray:
         raise NotImplementedError("Implement get_action() in your DiffusionPolicy subclass.")
-
-
-class ACTPolicy(BasePolicy):
-    """
-    Action Chunking with Transformers (Zhao et al. 2023) — scaffold.
-
-    To enable, subclass and implement _build():
-
-        class MyACTPolicy(ACTPolicy):
-            def _build(self, ckpt, device):
-                self._transformer = build_act_transformer(...)
-                self._transformer.load_state_dict(ckpt["model_state_dict"])
-                self._chunk_size = 100
-                self._chunk: Optional[np.ndarray] = None
-                self._step = 0
-
-            def get_action(self, obs_dict):
-                if self._chunk is None or self._step >= self._chunk_size:
-                    obs = ...
-                    self._chunk = self._transformer(obs).cpu().numpy()  # (chunk, action)
-                    self._step = 0
-                action = self._chunk[self._step]
-                self._step += 1
-                return action
-
-            def reset(self):
-                self._chunk = None
-                self._step = 0
-
-    Typical checkpoint keys:
-      ckpt["model_state_dict"]["model.transformer.*"]
-      ckpt["model_state_dict"]["model.encoder.*"]
-      ckpt["model_state_dict"]["model.action_head.*"]
-
-    Alternatively: export your trained policy with torch.jit.save() and use
-    model_type='torch_script' to skip implementing this class.
-    """
-
-    def __init__(
-        self,
-        ckpt: dict,
-        device: torch.device,
-        obs_keys: Optional[List[str]] = None,
-    ):
-        super().__init__(obs_keys, obs_norm_stats=_load_obs_normalization(ckpt))
-        self._device = device
-        self._build(ckpt, device)
-
-    def _build(self, ckpt: dict, device: torch.device) -> None:
-        raise NotImplementedError(
-            "ACTPolicy._build() is not implemented.\n"
-            "Subclass ACTPolicy, override _build() and get_action().\n"
-            "See the class docstring for a step-by-step guide.\n"
-            "Or export your model with torch.jit.save() and use model_type='torch_script'."
-        )
-
-    def get_action(self, obs_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        raise NotImplementedError("Implement get_action() in your ACTPolicy subclass.")
 
 
 class _RobomimicDiffusionPolicy(DiffusionPolicy):
@@ -1047,7 +991,7 @@ def _discover_mlp_layer_dims(nets: Dict[str, torch.Tensor], prefix: str) -> List
 def detect_model_type(checkpoint_path: str) -> str:
     """
     Inspect the checkpoint and return one of:
-      bc_mlp | bc_rnn | bc_gmm | diffusion | act | torch_script
+      bc_mlp | bc_rnn | bc_gmm | diffusion | torch_script
     """
     # 1. TorchScript (.pt / .pth saved with torch.jit.save)
     try:
@@ -1057,6 +1001,7 @@ def detect_model_type(checkpoint_path: str) -> str:
     except Exception:
         pass
 
+    logger.warning(_PICKLE_WARNING)
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
     # 2. Explicit tag embedded in checkpoint
@@ -1095,15 +1040,9 @@ def detect_model_type(checkpoint_path: str) -> str:
         logger.info("[detect] Diffusion Policy checkpoint.")
         return "diffusion"
 
-    # 5. ACT
-    if "model_state_dict" in ckpt:
-        if any("transformer" in k for k in ckpt["model_state_dict"]):
-            logger.info("[detect] ACT checkpoint.")
-            return "act"
-
     raise ValueError(
         f"Cannot auto-detect model type for '{checkpoint_path}'.\n"
-        "Supported types: bc_mlp, bc_rnn, bc_gmm, diffusion, act, torch_script.\n"
+        "Supported types: bc_mlp, bc_rnn, bc_gmm, diffusion, torch_script.\n"
         "Options:\n"
         "  • Pass --model-type <type> to override detection.\n"
         "  • Add 'model_type': '<type>' key to your checkpoint dict and re-save."
@@ -1138,6 +1077,7 @@ def load_policy(
     if model_type == "torch_script":
         return TorchScriptPolicy(checkpoint_path, device, obs_keys)
 
+    logger.warning(_PICKLE_WARNING)
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     builders = {
@@ -1145,7 +1085,6 @@ def load_policy(
         "bc_rnn":    lambda: RobomimicBCRNNPolicy(ckpt, device, obs_keys),
         "bc_gmm":    lambda: RobomimicBCGMMPolicy(ckpt, device, obs_keys),
         "diffusion": lambda: _RobomimicDiffusionPolicy(ckpt, device, obs_keys, action_horizon),
-        "act":       lambda: ACTPolicy(ckpt, device, obs_keys),
     }
 
     if model_type not in builders:
@@ -1207,7 +1146,7 @@ class ModelRunner:
         return self._policy.get_action(obs_dict)
 
     def reset(self) -> None:
-        """Reset stateful policy components. Call between episodes for RNN/ACT policies."""
+        """Reset stateful policy components. Call between episodes for RNN policies."""
         self._policy.reset()
 
     @property

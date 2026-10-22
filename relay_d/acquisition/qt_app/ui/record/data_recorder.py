@@ -4,10 +4,8 @@ import numpy as np
 import rclpy
 import rclpy.time
 from rclpy.node import Node
-import cv2
 from relay_d.utils.coloring_logger import logger
 from ...utils.stream_builder import StreamBuilder
-from .data_normalization import DataNormalizer
 import time
 import json
 from threading import Lock, Thread
@@ -23,7 +21,6 @@ class DataRecorder(Node):
     def __init__(self, yaml_parser):
         super().__init__("data_recorder")
         self.yaml_parser = yaml_parser
-        self.data_normalizer = DataNormalizer()
 
         self.recorded_data = defaultdict(list)
         self.recording_metadata = {}
@@ -35,14 +32,17 @@ class DataRecorder(Node):
         if self.yaml_parser and self.yaml_parser.is_loaded():
             config = self.yaml_parser.yaml_data.get("config", {})
             self.recording_frequency = config.get("recording_frequency", 30)
-        self.max_buffer_size = 1000000
+        # Samples live in RAM until Stop. Past this many bytes of frames the loop stops
+        # sampling (Stop still saves what is buffered) instead of running the PC out of memory.
+        self.max_buffer_bytes = 4 * 1024**3
+        self._buffered_bytes = 0
+        self._unsaved = False  # a save failed and the samples are still only in memory
 
         self.output_directory = None
         self.recorded_data_dir = None
         self.h5_file = None
         self.h5_file_path = None
 
-        self.gripper_states = {}
         self.timestamps = []
         self.timestamp_spreads = []
         self._sync_tolerance = None
@@ -58,9 +58,7 @@ class DataRecorder(Node):
 
         self.recording_thread = None
         self.stop_recording_flag = False
-        self.recording_start_time = None
         self.recording_sample_count = 0
-        self.decimation_counter = 0.0
 
         self.is_recording = False
         self.is_paused = False
@@ -120,6 +118,15 @@ class DataRecorder(Node):
                     logger.warning("Recording already in progress")
                     return False
 
+                if self._unsaved:
+                    logger.warning("Previous recording was not saved; retrying the save before starting")
+                    if not self.retry_save():
+                        logger.error(
+                            "Cannot start: the previous recording is still unsaved (fix the disk "
+                            "problem and try again). Starting would erase it."
+                        )
+                        return False
+
                 self.topic_subscribers = topic_subscribers
 
                 if demo_name is None:
@@ -147,6 +154,8 @@ class DataRecorder(Node):
                     # not the stale value from __init__ (which ran before config was loaded).
                     config = self.yaml_parser.yaml_data.get("config", {})
                     self.recording_frequency = config.get("recording_frequency", self.recording_frequency)
+                    if config.get("max_buffer_mb"):
+                        self.max_buffer_bytes = int(float(config["max_buffer_mb"]) * 1024**2)
                     logger.info(f"Recording frequency: {self.recording_frequency} Hz")
                     self._sync_tolerance = config.get("sync_tolerance_sec", None)
                     self._sync_mode = config.get("sync_mode", "soft")
@@ -158,23 +167,15 @@ class DataRecorder(Node):
                         )
 
                 self.recorded_data.clear()
+                self._buffered_bytes = 0
                 self.timestamps.clear()
                 self.timestamp_spreads = []
-                self.gripper_states.clear()
                 self._last_valid_raw = {}
                 self._stream_builder = StreamBuilder(self.yaml_parser)
                 self._fill_gaps_containers = self._build_fill_gaps_set()
                 self._modalities = self._build_modality_lookup()
                 if self._fill_gaps_containers:
                     logger.info(f"Gap-fill (hold) enabled for: {sorted(self._fill_gaps_containers)}")
-
-                if self.yaml_parser.is_loaded():
-                    config_data = self.yaml_parser.get_config_data()
-                    for config_item in config_data:
-                        if config_item["name"] == "gripper":
-                            gripper_count = config_item["count"]
-                            for i in range(gripper_count):
-                                self.gripper_states[f"gripper_{i + 1}"] = []
 
                 if flush_stale_data and hasattr(self.topic_subscribers, "flush_latest_data"):
                     self.topic_subscribers.flush_latest_data()
@@ -259,9 +260,7 @@ class DataRecorder(Node):
                             f"Seeded hold default ({_default!r}) for '{_cid}' ({_type_name})"
                         )
 
-            self.recording_start_time = self._clock.now()
             self.recording_sample_count = 0
-            self.decimation_counter = 0.0
 
             interval = 1.0 / self.recording_frequency
             # Monotonic next-tick anchor — corrects for loop body processing time
@@ -390,6 +389,9 @@ class DataRecorder(Node):
                             if processed_data:
                                 self._last_valid_raw[container_id] = processed_data
                                 self.recorded_data[container_id].append(processed_data)
+                                data = processed_data.get("data")
+                                if isinstance(data, np.ndarray):
+                                    self._buffered_bytes += data.nbytes
                                 data_processed += 1
                             elif container_id in self._last_valid_raw:
                                 self.recorded_data[container_id].append(
@@ -412,10 +414,13 @@ class DataRecorder(Node):
                             f"{data_processed} with actual data"
                         )
 
-                    if self.recording_sample_count > self.max_buffer_size:
-                        logger.warning(
-                            f"Recording buffer full ({self.max_buffer_size} samples)."
+                    if self._buffered_bytes > self.max_buffer_bytes:
+                        logger.error(
+                            f"Recording buffer full ({self._buffered_bytes / 1024**3:.1f} GB): "
+                            f"sampling stopped at {self.recording_sample_count} samples. "
+                            "Press Stop to save what was recorded."
                         )
+                        break
 
                     # Drift-corrected sleep: subtract the time already spent in the
                     # loop body so the inter-sample interval stays at 1/recording_frequency.
@@ -442,6 +447,11 @@ class DataRecorder(Node):
             logger.error(f"Fatal error in standard recording loop: {e}")
 
     def stop_recording(self):
+        """Stop the loop, save the buffered samples to the H5 file and close it.
+
+        Returns True only if the data was saved. If saving fails, returns False and
+        keeps the samples in memory (``recorded_data``) so nothing is lost silently.
+        """
         try:
             with self.recording_lock:
                 if not self.is_recording:
@@ -470,7 +480,7 @@ class DataRecorder(Node):
                 )
                 self.recording_metadata["total_samples"] = len(self.timestamps)
 
-                self._save_recorded_data()
+                saved = self._save_recorded_data()
 
                 if self._fill_count_summary:
                     total_filled = sum(self._fill_count_summary.values())
@@ -487,6 +497,11 @@ class DataRecorder(Node):
                     self.h5_file.close()
                     self.h5_file = None
 
+                if not saved:
+                    self._unsaved = True
+                    logger.error(f"Recording NOT saved to {self.h5_file_path}; data is still in memory")
+                    return False
+
                 logger.info(
                     f"Recording stopped. Saved {len(self.timestamps)} samples in {self.h5_file_path}"
                 )
@@ -500,6 +515,22 @@ class DataRecorder(Node):
         except Exception as e:
             logger.error(f"Failed to stop recording: {e}")
             return False
+
+    def retry_save(self):
+        """Save the samples left in memory by a failed stop_recording(). True on success."""
+        try:
+            self._create_h5_file(self.recording_metadata["demo_name"])
+            saved = self._save_recorded_data()
+        except Exception as e:
+            logger.error(f"Retry save failed: {e}")
+            saved = False
+        if self.h5_file:
+            self.h5_file.close()
+            self.h5_file = None
+        if saved:
+            self._unsaved = False
+            self.current_demo_number += 1
+        return saved
 
     def _create_h5_file(self, demo_name):
         """Create H5 file for recording data, reusing session folder if already set."""
@@ -636,32 +667,6 @@ class DataRecorder(Node):
             positions = [float(p) for p in positions] if positions else []
             velocities = [float(v) for v in velocities] if velocities else []
             efforts = [float(e) for e in efforts] if efforts else []
-
-            if self.data_normalizer.has_limits():
-                try:
-                    if positions:
-                        pos_dict = dict(zip(names, positions))
-                        normalized_pos = self.data_normalizer.normalize_joint_data(pos_dict, "position")
-                        if normalized_pos is not None:
-                            positions = [normalized_pos[name] for name in names]
-
-                    if velocities:
-                        vel_dict = dict(zip(names, velocities))
-                        normalized_vel = self.data_normalizer.normalize_joint_data(vel_dict, "velocity")
-                        if normalized_vel is not None:
-                            velocities = [normalized_vel[name] for name in names]
-
-                    if efforts:
-                        eff_dict = dict(zip(names, efforts))
-                        normalized_eff = self.data_normalizer.normalize_joint_data(eff_dict, "effort")
-                        if normalized_eff is not None:
-                            efforts = [normalized_eff[name] for name in names]
-
-                except Exception as e:
-                    logger.error(f"Normalization failed: {e}")
-                    if self.is_recording:
-                        self._stop_recording_due_to_error(f"Normalization error: {e}")
-                    return None
 
             return {
                 "type": "joint_state",
@@ -915,24 +920,6 @@ class DataRecorder(Node):
                     self._save_data_type_to_h5_safe(
                         container_group, data_type, type_data_list
                     )
-
-            if self.gripper_states:
-                gripper_group = demo_group.create_group("gripper_states")
-                for gripper_name, states in self.gripper_states.items():
-                    if states:
-                        if isinstance(states[0], dict):
-                            state_values = [s["state"] for s in states]
-                            timestamps = [s["timestamp"] for s in states]
-                            gripper_group.create_dataset(
-                                f"{gripper_name}_states", data=np.array(state_values)
-                            )
-                            gripper_group.create_dataset(
-                                f"{gripper_name}_timestamps", data=np.array(timestamps)
-                            )
-                        else:
-                            gripper_group.create_dataset(
-                                gripper_name, data=np.array(states)
-                            )
 
             self.recording_metadata["fill_count_summary"] = dict(self._fill_count_summary)
             self._save_metadata_to_h5(demo_group)
@@ -1255,33 +1242,3 @@ class DataRecorder(Node):
 
         except Exception as e:
             logger.error(f"Error saving metadata: {e}")
-
-    def get_recording_status(self):
-        return {
-            "is_recording": self.is_recording,
-            "is_paused": self.is_paused,
-            "samples_recorded": len(self.timestamps),
-            "recording_duration": time.time()
-            - self.recording_metadata.get("start_time", time.time())
-            if self.is_recording
-            else 0,
-            "output_directory": self.output_directory,
-            "current_demo": self.current_demo_number,
-            "active_inputs": len(self.topic_subscribers.subscribers)
-            if self.topic_subscribers
-            else 0,
-        }
-
-    def cleanup(self):
-        try:
-            if self.is_recording:
-                self.stop_recording()
-
-            if self.h5_file:
-                self.h5_file.close()
-                self.h5_file = None
-
-            logger.info("DataRecorder cleanup complete")
-
-        except Exception as e:
-            logger.error(f"Error during cleanup: {e}")

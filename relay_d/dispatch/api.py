@@ -32,7 +32,6 @@ from __future__ import annotations
 import time
 import numpy as np
 
-from collections import deque
 from importlib import resources
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
@@ -214,7 +213,8 @@ class InferenceSession:
     # Full loop (same behavior as the inference_node.py CLI)
     # -------------------------------------------------------------------
 
-    def run(self, hz: float = 0.0, max_steps: Optional[int] = None, validate_timeout: float = 10.0) -> None:
+    def run(self, hz: float = 0.0, max_steps: Optional[int] = None, validate_timeout: float = 10.0,
+            max_obs_age: float = 1.0) -> None:
         self.start()
 
         self.obs_node.get_logger().info(
@@ -247,12 +247,6 @@ class InferenceSession:
         min_dt = (1.0 / hz) if hz > 0 else 0.0
         step_count = 0
 
-        # Live expected-vs-actual tracking: the model's action is a per-tick
-        # robot0_joint_pos delta, so "expected next joint pos" computed on tick N
-        # is checked against the freshly-read robot0_joint_pos on tick N+1.
-        pending_expected_joint_pos = None
-        joint_tracking_errors: deque = deque(maxlen=20)
-
         try:
             while rclpy.ok():
                 t0 = time.monotonic()
@@ -263,14 +257,15 @@ class InferenceSession:
                     + ", ".join(f"{k}={np.round(obs[k], 4)}" for k in self.model.obs_keys if k in obs)
                 )
 
-                if pending_expected_joint_pos is not None and "robot0_joint_pos" in obs:
-                    actual_joint_pos = obs["robot0_joint_pos"]
-                    tracking_error = actual_joint_pos - pending_expected_joint_pos
-                    joint_tracking_errors.append(np.abs(tracking_error))
-                    logger.debug(
-                        "[InferenceSession] joint tracking error (actual - expected): "
-                        f"{tracking_error.round(5)}"
+                ages = self.obs_node.get_input_ages()
+                stale = {k: round(v, 2) for k, v in ages.items() if v > max_obs_age}
+                if stale:
+                    self.obs_node.get_logger().error(
+                        f"Stale inputs (> {max_obs_age}s without new data), not dispatching: {stale}",
+                        throttle_duration_sec=1.0,
                     )
+                    time.sleep(0.05)
+                    continue
 
                 try:
                     action = self.predict(obs)
@@ -279,9 +274,6 @@ class InferenceSession:
                     break
 
                 logger.debug(f"[InferenceSession] raw action (full {action.shape[0]}-dim): {action.round(5)}")
-
-                if "robot0_joint_pos" in obs and action.shape[0] >= 7:
-                    pending_expected_joint_pos = obs["robot0_joint_pos"] + action[:7]
 
                 self.dispatch(action)
 
@@ -292,13 +284,6 @@ class InferenceSession:
                         f"Step {step_count} | action={action.round(4)} | "
                         f"inference_time={elapsed*1000:.1f}ms"
                     )
-                if step_count % 20 == 0 and joint_tracking_errors:
-                    mean_abs_err = np.mean(joint_tracking_errors, axis=0)
-                    self.obs_node.get_logger().info(
-                        f"[InferenceSession] joint tracking MAE (last {len(joint_tracking_errors)} ticks): "
-                        f"{mean_abs_err.round(5)}"
-                    )
-
                 if max_steps is not None and step_count >= max_steps:
                     break
 

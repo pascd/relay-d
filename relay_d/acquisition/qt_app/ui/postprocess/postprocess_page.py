@@ -1,24 +1,9 @@
 import os
-import sys
-import tkinter as tk
+import shutil
 
-from PyQt5.QtWidgets import (
-    QMainWindow,
-    QApplication,
-    QLabel,
-    QTextEdit,
-    QPushButton,
-    QVBoxLayout,
-    QHBoxLayout,
-    QWidget,
-    QButtonGroup,
-    QScrollArea,
-)
-from PyQt5 import uic
+from PyQt5.QtWidgets import QWidget, QButtonGroup
 from PyQt5.QtCore import Qt
-from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtWidgets import QFileDialog
-from tkinter.filedialog import askopenfilename
 from datetime import datetime
 from relay_d.dispatch import DispatcherHelpers
 
@@ -33,13 +18,22 @@ from ..postprocess.robomimic_config_handler import (
 from ..settings.config_manager import config
 from relay_d.utils.coloring_logger import logger
 from ...utils.custom_message_box import CustomMessageBox
+from ...utils.default_configs import generate_default_configs
 from ..postprocess.postprocess_config_loader import PostprocessConfigLoader
+from ..postprocess.offline_config import load_offline_config
+from ..postprocess.postprocess_options import PostprocessOptions
 
 class PostProcessPage(QWidget):
     def __init__(self, ui_instance, yaml_parser: YamlParser = None, settings_page=None):
         super().__init__()
         self.ui = ui_instance
         self.yaml_parser = yaml_parser  # Shared YamlParser from ConfigPage
+        # Config loaded on this page only (no live-ROS check, never shared with the
+        # Record page); takes precedence over the shared parser while set.
+        self._local_parser = None
+        # Format options (postprocess_config.yaml): loaded explicitly by the user, or
+        # auto-detected next to a loaded config. Neither -> built-in defaults.
+        self._options_explicit = False
         self.settings_page = settings_page
 
         self.h5_files = []
@@ -52,6 +46,7 @@ class PostProcessPage(QWidget):
         self.format_buttons = {}
         self.format_names = {
             "btn_format_robomimic": "robomimic",
+            "btn_format_lerobot": "lerobot",
         }
 
         # Use dispatcher api for helpers
@@ -64,6 +59,8 @@ class PostProcessPage(QWidget):
 
         self.setup_connections()
         self.setup_format_buttons()
+        self._update_config_label()
+        self._update_options_label()
 
         # Connect to config changes
         config.settings_changed.connect(self._on_settings_changed)
@@ -83,19 +80,153 @@ class PostProcessPage(QWidget):
         logger.info(f"PostProcessPage: config loaded from {file_path}")
         if self.yaml_parser is not None:
             self.yaml_parser.load_yaml_file(file_path)
+        if self._local_parser is not None:
+            logger.info(
+                "PostProcessPage: keeping the config loaded on this page "
+                "(use 'Use Config page' to switch back)."
+            )
+            return
         self._sync_data_config_from_parser()
+        self._update_config_label()
+        self._auto_load_sibling_options(file_path)
 
     def _on_config_cleared(self):
         """Handle config cleared signal - wipe the bridge map."""
         logger.info("PostProcessPage: config cleared")
-        self.yaml_converter.data_config = {}
+        if self._local_parser is None:
+            self.yaml_converter.data_config = {}
+        self._update_config_label()
 
     def _on_config_saved(self, file_path: str):
         """Handle config saved signal - re-sync in case output paths changed."""
         logger.info(f"PostProcessPage: config saved, re-syncing from {file_path}")
         if self.yaml_parser is not None:
             self.yaml_parser.load_yaml_file(file_path)
+        if self._local_parser is None:
+            self._sync_data_config_from_parser()
+
+    # ------------------------------------------------------------------
+    # Config loaded on this page (works without any live ROS topics)
+    # ------------------------------------------------------------------
+
+    def _active_parser(self):
+        """The parser conversions use: this page's own config if loaded, else the shared one."""
+        return self._local_parser if self._local_parser is not None else self.yaml_parser
+
+    def _update_config_label(self):
+        label = getattr(self.ui, "label_postprocess_config", None)
+        if label is None:
+            return
+        if self._local_parser is not None:
+            name = os.path.basename(self._local_parser.get_current_config_path() or "")
+            label.setText(f"{name} (post-process only)")
+        elif self.yaml_parser is not None and self.yaml_parser.yaml_data:
+            label.setText("from Config page")
+        else:
+            label.setText("No config loaded")
+        clear_btn = getattr(self.ui, "btn_clear_postprocess_config", None)
+        if clear_btn is not None:
+            clear_btn.setEnabled(self._local_parser is not None)
+
+    def _load_postprocess_config(self):
+        """Load a config for post-processing only: no topic/TF availability check,
+        no containers, and the Record page is never touched."""
+        try:
+            path, _ = QFileDialog.getOpenFileName(
+                None, "Open Config File", config.config_dialog_dir(), "YAML files (*.yaml *.yml)"
+            )
+        except Exception as e:
+            logger.error(f"An error occured while opening file: {e}")
+            return
+        if not path:
+            return
+        self.load_postprocess_config_from_path(path)
+
+    def load_postprocess_config_from_path(self, path: str) -> bool:
+        parser, problems = load_offline_config(path)
+        if parser is None:
+            CustomMessageBox.error(
+                "Config rejected:\n" + "\n".join(f"  {p}" for p in problems)
+            )
+            return False
+        warnings = [p for p in problems if p.startswith("warning:")]
+        if warnings:
+            CustomMessageBox.warning("\n".join(w[len("warning: "):] for w in warnings))
+        self._local_parser = parser
         self._sync_data_config_from_parser()
+        self._update_config_label()
+        self._auto_load_sibling_options(path)
+        logger.info(f"PostProcessPage: using post-process-only config {path}")
+        return True
+
+    def _clear_postprocess_config(self):
+        """Drop the page's own config and go back to the Config page's one (if any)."""
+        self._local_parser = None
+        if self.yaml_parser is not None and self.yaml_parser.yaml_data:
+            self._sync_data_config_from_parser()
+        else:
+            self.yaml_converter.data_config = {}
+        self._update_config_label()
+
+    # ------------------------------------------------------------------
+    # Format options (postprocess_config.yaml)
+    # ------------------------------------------------------------------
+
+    def _update_options_label(self):
+        label = getattr(self.ui, "label_postprocess_options", None)
+        source = self.yaml_converter.options.source
+        if label is not None:
+            if source:
+                kind = "" if self._options_explicit else " (auto-detected)"
+                label.setText(f"{os.path.basename(source)}{kind}")
+            else:
+                label.setText("defaults")
+        clear_btn = getattr(self.ui, "btn_clear_postprocess_options", None)
+        if clear_btn is not None:
+            clear_btn.setEnabled(bool(source))
+
+    def _load_postprocess_options(self):
+        try:
+            path, _ = QFileDialog.getOpenFileName(
+                None, "Open Postprocess Options", config.config_dialog_dir(), "YAML files (*.yaml *.yml)"
+            )
+        except Exception as e:
+            logger.error(f"An error occured while opening file: {e}")
+            return
+        if path:
+            self.load_postprocess_options_from_path(path)
+
+    def load_postprocess_options_from_path(self, path: str, explicit: bool = True) -> bool:
+        options, problems = PostprocessOptions.load(path)
+        if options is None:
+            if explicit:
+                CustomMessageBox.error(
+                    "Options rejected:\n" + "\n".join(f"  {p}" for p in problems)
+                )
+            else:
+                logger.warning(f"Ignoring {path}: {'; '.join(problems)}")
+            return False
+        warnings = [p for p in problems if p.startswith("warning:")]
+        if warnings and explicit:
+            CustomMessageBox.warning("\n".join(w[len("warning: "):] for w in warnings))
+        self.yaml_converter.options = options
+        self._options_explicit = explicit
+        self._update_options_label()
+        logger.info(f"PostProcessPage: using format options from {path}")
+        return True
+
+    def _auto_load_sibling_options(self, config_path: str):
+        """Use a postprocess_config.yaml next to the loaded config, unless the user chose one."""
+        if self._options_explicit:
+            return
+        sibling = PostprocessOptions.find_sibling(config_path)
+        if sibling:
+            self.load_postprocess_options_from_path(sibling, explicit=False)
+
+    def _clear_postprocess_options(self):
+        self.yaml_converter.options = PostprocessOptions()
+        self._options_explicit = False
+        self._update_options_label()
 
     # ------------------------------------------------------------------
     # Bridge map sync
@@ -112,13 +243,14 @@ class PostProcessPage(QWidget):
               output: { robot0_eef_pos: robot0_eef/translations, ... }
               metadata: { env_name: ..., n_actions: 7, ... }
         """
-        if self.yaml_parser is None:
+        parser = self._active_parser()
+        if parser is None:
             logger.warning(
                 "PostProcessPage: no yaml_parser available, cannot sync bridge map"
             )
             return
 
-        raw = self.yaml_parser.yaml_data  # Full parsed YAML dict
+        raw = parser.yaml_data  # Full parsed YAML dict
 
         if not raw:
             logger.warning("PostProcessPage: yaml_parser has no data yet")
@@ -167,6 +299,31 @@ class PostProcessPage(QWidget):
             if hasattr(self.ui, "btn_clear_preview"):
                 self.ui.btn_clear_preview.clicked.connect(self.clear_h5_preview)
 
+            if hasattr(self.ui, "btn_generate_postprocess_configs"):
+                self.ui.btn_generate_postprocess_configs.clicked.connect(
+                    lambda: generate_default_configs(self.ui)
+                )
+
+            if hasattr(self.ui, "btn_load_postprocess_config"):
+                self.ui.btn_load_postprocess_config.clicked.connect(
+                    self._load_postprocess_config
+                )
+
+            if hasattr(self.ui, "btn_clear_postprocess_config"):
+                self.ui.btn_clear_postprocess_config.clicked.connect(
+                    self._clear_postprocess_config
+                )
+
+            if hasattr(self.ui, "btn_load_postprocess_options"):
+                self.ui.btn_load_postprocess_options.clicked.connect(
+                    self._load_postprocess_options
+                )
+
+            if hasattr(self.ui, "btn_clear_postprocess_options"):
+                self.ui.btn_clear_postprocess_options.clicked.connect(
+                    self._clear_postprocess_options
+                )
+
         except Exception as e:
             logger.error("Error setting up connections.")
 
@@ -212,20 +369,32 @@ class PostProcessPage(QWidget):
         logger.info(f"Setup {len(self.format_buttons)} format buttons")
 
     def _select_output_format(self, format_name):
-        button = self.format_buttons.get(format_name)
-        if button is None:
+        """Single-choice toggle: select `format_name`, or deselect it if it already is.
+
+        The buttons live in a non-exclusive QButtonGroup (so the selected one can be
+        clicked again to deselect), which makes Qt ignore their `autoExclusive` flag;
+        the checked state of every button is therefore set explicitly here.
+        """
+        if format_name not in self.format_buttons:
             return
 
         if self.output_format == format_name:
             self.output_format = ""
-            button.setChecked(False)
+            self._sync_format_buttons()
             self.clear_output_preview()
             logger.info(f"Deselected format: {format_name}")
         else:
             self.output_format = format_name
-            button.setChecked(True)
+            self._sync_format_buttons()
             self.show_output_structure_preview(format_name)
             logger.info(f"Selected output format: {format_name}")
+
+    def _sync_format_buttons(self):
+        """Check exactly the button of the selected format (none if nothing is selected)."""
+        for name, button in self.format_buttons.items():
+            blocked = button.blockSignals(True)
+            button.setChecked(name == self.output_format)
+            button.blockSignals(blocked)
 
     def clear_output_preview(self):
         if hasattr(self.ui, "txt_output_preview"):
@@ -325,7 +494,7 @@ class PostProcessPage(QWidget):
             logger.warning("Bridge map is empty - no config loaded yet.")
             CustomMessageBox.warning(
                 "No configuration loaded.\n\n"
-                "Please go to the Config page and load your data_config.yaml first.")
+                "Load a config on the Config page, or use 'Load Config...' on this page.")
             return
 
         logger.info(f"Converting dataset to {self.output_format} format.")
@@ -342,81 +511,100 @@ class PostProcessPage(QWidget):
             save_folder = self.settings_page.get_hdf5_save_folder()
             output_dir = os.path.join(save_folder, timestamp_folder)
         else:
-            output_dir = os.path.expanduser("~/.RelayDApp/", timestamp_folder)
+            output_dir = os.path.join(os.path.expanduser("~/.RelayDApp"), timestamp_folder)
             logger.warning(f"The save_folder is not set, please set it in the Settings page. Defaulting to {timestamp_folder}")
 
         os.makedirs(output_dir, exist_ok=True)
 
         timestamp = int(__import__("time").time())
-        output_filename = f"{self.output_format}_dataset_{timestamp}.h5"
+        # LeRobot datasets are directories (parquet + mp4 + metadata); the other
+        # formats are single HDF5 files.
+        extension = "" if self.output_format == "lerobot" else ".h5"
+        output_filename = f"{self.output_format}_dataset_{timestamp}{extension}"
         combined_output_path = os.path.join(output_dir, output_filename)
 
-        if self.output_format == "raw":
-            success = self.yaml_converter.convert_raw_format(
-                self.h5_files, combined_output_path
-            )
-        else:
-            success = self.yaml_converter.convert_multiple_files(
-                self.output_format,
-                self.h5_files,
-                combined_output_path,
-            )
+        success = self.yaml_converter.convert_multiple_files(
+            self.output_format,
+            self.h5_files,
+            combined_output_path,
+        )
 
         # Populate the training config's observation modalities from the
         # actual converted data and save it alongside the dataset, for
-        # future reference. "raw" is a pass-through copy with no training-
-        # config/observation-modality concept, so it's skipped.
-        if success and self.output_format != "raw":
+        # future reference.
+        post_error = None
+        if success:
             try:
                 # Copy the acquisition_config used to build the dataset into the output folder for reference
-                if(not self.yaml_parser.save_yaml_file(file_path=f"{output_dir}/acquisition_config.yaml")):
-                    logger.error("An error occured copying the acquisition_config to the file.")
-                    return
+                if(not self._active_parser().save_yaml_file(file_path=f"{output_dir}/acquisition_config.yaml")):
+                    raise RuntimeError("could not copy acquisition_config.yaml to the output folder")
 
-                # Get the train config path from the format config and populate it with the actual train dir and observation modalities
-                train_config_path = self.config_loader.get_output_train_config(
-                    self.output_format, self.yaml_parser.get_train_model_name()
-                )
-                handler = RobomimicConfigHandler(train_config_path)
-                handler.set_train_dir(f"~/Documents/robomimic_trains/{self.output_format}_dataset_{timestamp_folder}")
+                # Keep the format options used for this dataset next to the config
+                if self.yaml_converter.options.source:
+                    shutil.copy2(
+                        self.yaml_converter.options.source,
+                        os.path.join(output_dir, "postprocess_config.yaml"),
+                    )
 
-                # Classigy observations based on the actual converted data and populate the config
-                classification = classify_observations(
-                    self.yaml_converter.data_config,
-                    self.yaml_converter.get_last_shape_cache(),
-                )
-                handler.set_observation_modalities(**classification)
-                handler.save(
-                    os.path.join(output_dir, f"{self.output_format}_config.json")
-                )
+                # The robomimic training config only applies to the robomimic format
+                if self.output_format != "lerobot":
+                    # Get the train config path from the format config and populate it with the actual train dir and observation modalities
+                    train_config_path = self.config_loader.get_output_train_config(
+                        self.output_format,
+                        self._active_parser().get_train_model_name(self.yaml_converter.options),
+                    )
+                    handler = RobomimicConfigHandler(train_config_path)
+                    handler.set_train_dir(f"~/Documents/robomimic_trains/{self.output_format}_dataset_{timestamp_folder}")
 
-                # For the dispatcher add the obs_config.yaml based on the acquired config
-                action_dispatcher_folder = os.path.join(output_dir, "action_dispatcher")
-                obs_config_path = os.path.join(action_dispatcher_folder, "obs_config.yaml")
+                    # Classigy observations based on the actual converted data and populate the config
+                    classification = classify_observations(
+                        self.yaml_converter.data_config,
+                        self.yaml_converter.get_last_shape_cache(),
+                    )
+                    handler.set_observation_modalities(**classification)
+                    handler.save(
+                        os.path.join(output_dir, f"{self.output_format}_config.json")
+                    )
 
-                os.makedirs(action_dispatcher_folder, exist_ok=True)
+                # The action_dispatcher files target the robomimic inference path
+                if self.output_format != "lerobot":
+                    # For the dispatcher add the obs_config.yaml based on the acquired config
+                    action_dispatcher_folder = os.path.join(output_dir, "action_dispatcher")
+                    obs_config_path = os.path.join(action_dispatcher_folder, "obs_config.yaml")
 
-                # Add the obs_config.yaml converted
-                self.yaml_parser.save_yaml_file(file_path=obs_config_path, data=self.yaml_parser.get_obs_config())
+                    os.makedirs(action_dispatcher_folder, exist_ok=True)
 
-                # Add the action_config_template (the user changes as it may need)
-                self.dispatcher_helper.save_action_template(output_dir=action_dispatcher_folder)
+                    # Add the obs_config.yaml converted
+                    parser = self._active_parser()
+                    parser.save_yaml_file(file_path=obs_config_path, data=parser.get_obs_config())
 
-                # Add the inference script for deploy
-                self.dispatcher_helper.save_inference_script(output_dir=action_dispatcher_folder)
+                    # Add the action_config_template (the user changes as it may need)
+                    self.dispatcher_helper.save_action_template(output_dir=action_dispatcher_folder)
+
+                    # Add the inference script for deploy
+                    self.dispatcher_helper.save_inference_script(output_dir=action_dispatcher_folder)
 
             except Exception as e:
+                post_error = str(e) or type(e).__name__
                 logger.error(
                     f"Failed to write populated {self.output_format} training config: {e}"
                 )
 
         if success:
             logger.info("Dataset successfully converted and validated!")
+            if post_error:
+                CustomMessageBox.warning(
+                    "The dataset was converted, but some extra files (training config / "
+                    f"action_dispatcher files) could not be written:\n\n{post_error}"
+                )
             CustomMessageBox.info(
                 f"Dataset successfully converted to {self.output_format} format!\n\nOutput file: {combined_output_path}",
             )
         else:
             logger.error("Dataset conversion failed")
-            CustomMessageBox.error("Failed to convert dataset.")
+            reason = getattr(self.yaml_converter, "last_error", None)
+            CustomMessageBox.error(
+                "Failed to convert dataset." + (f"\n\n{reason}" if reason else "")
+            )
 
         return

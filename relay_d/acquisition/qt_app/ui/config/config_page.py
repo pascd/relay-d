@@ -1,6 +1,3 @@
-import os
-import sys
-import tkinter as tk
 
 # Import utils
 from .yaml_parser import YamlParser
@@ -8,9 +5,8 @@ from ..settings.config_manager import config
 from relay_d.utils.coloring_logger import logger
 from ...utils.custom_message_box import CustomMessageBox
 from ...utils.stream_builder import StreamBuilder
+from ...utils.default_configs import generate_default_configs
 
-from PyQt5.QtWidgets import QMainWindow, QApplication, QLabel, QTextEdit, QPushButton
-from PyQt5 import uic
 from PyQt5.QtCore import Qt
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtWidgets import QFileDialog
@@ -57,6 +53,11 @@ class ConfigPage:
             else:
                 logger.error(f"No button btn_insert_config found.")
 
+            if hasattr(self.ui, "btn_generate_configs"):
+                self.ui.btn_generate_configs.clicked.connect(
+                    lambda: generate_default_configs(self.ui)
+                )
+
             if hasattr(self.ui, "btn_remove_config"):
                 self.ui.btn_remove_config.clicked.connect(self.remove_config_file)
             else:
@@ -81,8 +82,8 @@ class ConfigPage:
 
         try:
             fn, _ = QFileDialog.getOpenFileName(
-                parent=self.load_folder if self.load_folder else None,
                 caption="Open Config File",
+                directory=config.config_dialog_dir(),
                 filter="YAML files (*.yaml *.yml)",
             )
         except Exception as e:
@@ -197,6 +198,7 @@ class ConfigPage:
         return StreamBuilder(self.yaml_parser).get_build_errors()
 
     def remove_config_file(self):
+        """Unload the current config and tell the other pages (``config_cleared``)."""
 
         if not self.yaml_parser.current_config:
             logger.warning(f"There is no lodaded config to remove.")
@@ -206,6 +208,7 @@ class ConfigPage:
         logger.info(f"Removing config file")
 
         self.yaml_parser.clear()
+        self.yaml_parser.yaml_data = None  # else Post-process re-syncs the removed config
         self.clear_config_preview()
         ## Emit a signal to say the config is not loaded anymore
         self.signal_manager.config_cleared.emit()

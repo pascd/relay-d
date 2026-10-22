@@ -331,8 +331,8 @@ class ObsBuilder(Node):
         self._latest_inputs: Dict[str, Any]        = {}   # raw messages / enriched TF
         self._input_timestamps: Dict[str, float]   = {}   # per-input timestamp, seconds
         self._latest:        Dict[str, np.ndarray] = {}   # evaluated obs (sample-and-hold)
+        self._arrival:       Dict[str, float]      = {}   # per-input local arrival time (monotonic)
 
-        self._inputs_received: set        = set()  # inputs that have yielded ≥1 real message
         self._tf_warned: set              = set()  # throttle: warn once per failing TF input
         self._joint_mismatch_warned: set  = set()  # throttle: warn once per joint filter input
         self._desync_warned: set          = set()  # throttle: warn once per desynced obs
@@ -609,37 +609,6 @@ class ObsBuilder(Node):
                 f"provide 3 (one per axis) or 1 (broadcast to all)."
             )
 
-    def _compute_initial_obs(self) -> Dict[str, np.ndarray]:
-        """Pre-fill zeros for observations whose element counts are known at parse time.
-
-        Normalization is NOT applied to the zero-filled arrays — they will be
-        replaced with real (normalized) values on the first data callback.
-        """
-        initial = {}
-        for obs_name, entries in self._extractors.items():
-            size = 0
-            known = True
-            for inp_name, payload, is_slice, _ in entries:
-                if inp_name == "__zero__":
-                    size += payload
-                elif is_slice:
-                    jnames = self._joint_filters.get(inp_name)
-                    static_ns = self._latest_inputs.get(inp_name)
-                    if jnames is not None:
-                        size += len(jnames)
-                    elif static_ns is not None:
-                        size += len(static_ns.data)
-                    else:
-                        known = False
-                        break
-                else:
-                    size += 1   # scalar spec always contributes 1 element
-            if known:
-                if self._rotation_format.get(obs_name) == "rpy":
-                    size = 3   # 4 quaternion components collapse to (r, p, y)
-                initial[obs_name] = np.zeros(size, dtype=np.float32)
-        return initial
-
     # ------------------------------------------------------------------
     # Subscription setup with auto type discovery
     # ------------------------------------------------------------------
@@ -738,7 +707,7 @@ class ObsBuilder(Node):
             with self._lock:
                 self._latest_inputs[input_name] = decoded
                 self._input_timestamps[input_name] = ts
-            self._inputs_received.add(input_name)
+                self._arrival[input_name] = time.monotonic()
             self._evaluate_all()
             return
 
@@ -761,7 +730,7 @@ class ObsBuilder(Node):
         with self._lock:
             self._latest_inputs[input_name] = msg
             self._input_timestamps[input_name] = ts
-        self._inputs_received.add(input_name)
+            self._arrival[input_name] = time.monotonic()
         self._evaluate_all()
 
     def _tf_callback(self) -> None:
@@ -777,7 +746,6 @@ class ObsBuilder(Node):
                 )
                 updates[name] = _make_enriched_tf(tf)
                 ts_updates[name] = _stamp_to_seconds(tf.header.stamp)
-                self._inputs_received.add(name)
             except Exception as exc:
                 if name not in self._tf_warned:
                     self._tf_warned.add(name)
@@ -788,6 +756,10 @@ class ObsBuilder(Node):
         if updates:
             with self._lock:
                 self._latest_inputs.update(updates)
+                # a TF lookup keeps returning the last transform: only a new stamp is fresh data
+                for name, ts in ts_updates.items():
+                    if self._input_timestamps.get(name) != ts:
+                        self._arrival[name] = time.monotonic()
                 self._input_timestamps.update(ts_updates)
             self._evaluate_all()
 
@@ -907,6 +879,12 @@ class ObsBuilder(Node):
         """Return a thread-safe snapshot of the latest observations."""
         with self._lock:
             return {k: v.copy() for k, v in self._latest.items()}
+
+    def get_input_ages(self) -> Dict[str, float]:
+        """Seconds since each live input (topic or TF) last received new data."""
+        now = time.monotonic()
+        with self._lock:
+            return {k: now - t for k, t in self._arrival.items()}
 
     def validate_inputs(self, timeout: float = 10.0) -> Tuple[bool, dict]:
         """Check that every configured input source is reachable.

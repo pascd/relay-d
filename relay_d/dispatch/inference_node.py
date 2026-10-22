@@ -5,7 +5,7 @@ CLI entry point. Thin wrapper around api.InferenceSession, which does the
 actual work: grab latest obs -> run policy forward pass -> dispatch action.
 
 Supported model types (auto-detected unless --model-type is set):
-  bc_mlp | bc_rnn | bc_gmm | diffusion | act | torch_script
+  bc_mlp | bc_rnn | bc_gmm | diffusion | torch_script
 
 Usage (after `pip install -e .`):
     lfd-inference-node \
@@ -38,15 +38,17 @@ from .api import InferenceSession
 
 def main():
     parser = argparse.ArgumentParser(description="LfD Inference Node")
-    parser.add_argument("--checkpoint",    required=True,  help="Path to policy checkpoint (.pth or .pt)")
+    parser.add_argument("--checkpoint",    required=True,  help="Path to policy checkpoint (.pth or .pt). .pth files are pickles that run code on load: only use checkpoints you trust")
     parser.add_argument("--obs-config",    required=True,  help="Path to obs_config.yaml")
     parser.add_argument("--action-config", required=True,  help="Path to action_config.yaml")
     parser.add_argument("--device",        default="cuda",  help="Torch device: cpu | cuda")
-    parser.add_argument("--hz",            type=float, default=0.0,
-                        help="Max inference rate in Hz (0 = as fast as possible)")
+    parser.add_argument("--hz",            type=float, default=10.0,
+                        help="Max inference rate in Hz (0 = as fast as possible, default: 10)")
+    parser.add_argument("--max-obs-age",   type=float, default=1.0,
+                        help="Skip dispatching while any input is older than this many seconds (default: 1.0)")
     parser.add_argument("--model-type",    default="auto",
                         help="Model type: auto | bc_mlp | bc_rnn | bc_gmm | "
-                             "diffusion | act | torch_script  (default: auto)")
+                             "diffusion | torch_script  (default: auto)")
     parser.add_argument("--obs-keys",      default=None,
                         help="Comma-separated obs keys in training order "
                              "(e.g. robot0_eef_pos,robot0_eef_quat). "
@@ -80,7 +82,7 @@ def main():
         action_horizon=args.action_horizon,
     )
     try:
-        session.run(hz=args.hz, validate_timeout=args.obs_wait)
+        session.run(hz=args.hz, validate_timeout=args.obs_wait, max_obs_age=args.max_obs_age)
     finally:
         session.close()
 

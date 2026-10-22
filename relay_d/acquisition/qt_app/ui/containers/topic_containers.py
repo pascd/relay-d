@@ -1,19 +1,5 @@
 import os
-import sys
-from PyQt5.QtWidgets import (
-    QMainWindow,
-    QApplication,
-    QLabel,
-    QTextEdit,
-    QPushButton,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QScrollArea,
-    QFrame,
-    QGridLayout,
-    QSizePolicy,
-)
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QScrollArea, QGridLayout, QSizePolicy
 from PyQt5 import uic
 from PyQt5.QtCore import Qt
 from relay_d.utils.coloring_logger import logger
@@ -571,49 +557,6 @@ class TopicContainers:
 
         logger.info("Cleared all containers")
 
-    def remove_container(self, container):
-        """
-        Remove a container from the UI and tracking list
-
-        Args:
-            container (QWidget): The container to remove
-        """
-        try:
-            if container in self.containers:
-                self.containers.remove(container)
-
-            # Remove from parent widget's layout
-            parent = container.parent()
-            if parent and parent.layout():
-                parent.layout().removeWidget(container)
-
-            # Hide and delete the container
-            container.hide()
-            container.deleteLater()
-
-            logger.info(
-                f"Removed container: {getattr(container, 'container_id', 'unknown')}"
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to remove container: {e}")
-
-    def get_containers_by_type(self, topic_type):
-        """
-        Get all containers of a specific topic type
-
-        Args:
-            topic_type (str): The topic type to filter by
-
-        Returns:
-            list: List of containers matching the topic type
-        """
-        return [
-            container
-            for container in self.containers
-            if hasattr(container, "topic_type") and container.topic_type == topic_type
-        ]
-
     def create_and_add_container(
         self, topic_type, container_data=None, target_widget=None
     ):
@@ -680,10 +623,6 @@ class TopicContainers:
         except Exception as e:
             logger.error(f"Failed to update container info: {e}")
 
-    def get_container_count(self):
-        """Get the number of containers"""
-        return len(self.containers)
-
     def get_container_by_id(self, container_id):
         """Get container by its ID"""
         for container in self.containers:
@@ -693,57 +632,6 @@ class TopicContainers:
             ):
                 return container
         return None
-
-    def get_container_by_attribute(self, attribute_name, attribute_value):
-        """
-        Get container by any attribute
-
-        Args:
-            attribute_name (str): Name of the attribute to search by
-            attribute_value: Value to match
-
-        Returns:
-            QWidget or None: The first container matching the criteria
-        """
-        for container in self.containers:
-            if (
-                hasattr(container, attribute_name)
-                and getattr(container, attribute_name) == attribute_value
-            ):
-                return container
-        return None
-
-    def get_containers_by_attribute(self, attribute_name, attribute_value):
-        """
-        Get all containers matching an attribute
-
-        Args:
-            attribute_name (str): Name of the attribute to search by
-            attribute_value: Value to match
-
-        Returns:
-            list: List of containers matching the criteria
-        """
-        return [
-            container
-            for container in self.containers
-            if hasattr(container, attribute_name)
-            and getattr(container, attribute_name) == attribute_value
-        ]
-
-    def update_container_status(self, container_id, status):
-        """
-        Update the status of a specific container by ID
-
-        Args:
-            container_id (str): The container ID
-            status (str): The new status
-        """
-        container = self.get_container_by_id(container_id)
-        if container:
-            self.update_container_info(container, {"status": status})
-            return True
-        return False
 
     def get_all_container_info(self):
         """
@@ -977,16 +865,6 @@ class TopicContainers:
 
         except Exception as e:
             logger.error(f"Error in comprehensive layout update: {e}")
-
-    def handle_window_resize(self, new_size):
-        """Handle window resize events to expand containers"""
-        try:
-            logger.info(
-                f"Handling window resize to: {new_size.width()}x{new_size.height()}"
-            )
-            self.resize_containers_to_window(new_size)
-        except Exception as e:
-            logger.error(f"Error handling window resize: {e}")
 
     def debug_containers(self):
         """Debug method to log container information"""

@@ -1,8 +1,5 @@
-import time
-
 from PyQt5.QtCore import QTimer
 from relay_d.utils.coloring_logger import logger
-from relay_d.utils.tf_topic import TfTopicSubscriptionError
 
 # Import utils
 from ..config.yaml_parser import YamlParser
@@ -11,9 +8,9 @@ from ..record.topic_subscribers import TopicSubscribers
 from ..record.container_visualizer import ContainerVisualizer
 from ..record.data_recorder import DataRecorder
 from ..record.container_manager import ContainerManager
-from ..review.demo_validator import DemoValidator, CheckStatus
+from ..record.recording_controller import RecordingController
+from ..review.demo_validator import DemoValidator
 from ..settings.config_manager import config
-from ...utils.custom_message_box import CustomMessageBox
 
 class RecordPage:
     def __init__(self, ui_instance, yaml_parser: YamlParser, settings_page=None):
@@ -37,14 +34,16 @@ class RecordPage:
             self.container_visualizer,
         )
 
-        # Recording state
-        self.is_recording = False
-        self.recording_start_time = None
-
-        # Session-level demo tracking (mirrors AppAPI._session_h5_files)
-        self.session_h5_files: list = []
-        self.last_validation_result = None
-        self._demo_validator = DemoValidator()
+        # Recording lifecycle: start/pause/resume/stop, session demos, record buttons
+        self.recording = RecordingController(
+            ui_instance,
+            yaml_parser,
+            self.data_recorder,
+            self.topic_subscribers,
+            self.topic_containers,
+            self.container_manager,
+            DemoValidator(),
+        )
 
         # Setup all button connections
         self.setup_connections()
@@ -121,16 +120,8 @@ class RecordPage:
         self.tf_update_timer.start(interval_ms)
         logger.info(f"TF update timer started at {freq} Hz ({interval_ms} ms)")
 
-        ## Enable the buttons
-        ## Buttons to start, record and pause
-        if hasattr(self.ui, "btn_start_record"):
-            self.ui.btn_start_record.setEnabled(True)
-
-        if hasattr(self.ui, "btn_pause_record"):
-            self.ui.btn_pause_record.setEnabled(False)
-
-        if hasattr(self.ui, "btn_stop_record"):
-            self.ui.btn_stop_record.setEnabled(False)
+        # Start becomes available once a config is loaded
+        self.recording.set_config_loaded(True)
 
         ## Set grippers keys for state modification
         self.gripper_key_map = {}
@@ -165,16 +156,7 @@ class RecordPage:
         if hasattr(self.ui, "page_start"):
             self.topic_containers.reset_layout_references(self.ui.page_start)
 
-        ## Enable the buttons
-        ## Buttons to start, record and pause
-        if hasattr(self.ui, "btn_start_record"):
-            self.ui.btn_start_record.setEnabled(False)
-
-        if hasattr(self.ui, "btn_pause_record"):
-            self.ui.btn_pause_record.setEnabled(False)
-
-        if hasattr(self.ui, "btn_stop_record"):
-            self.ui.btn_stop_record.setEnabled(False)
+        self.recording.set_config_loaded(False)
 
         # Update status
         self.update_config_status("No config loaded")
@@ -189,218 +171,45 @@ class RecordPage:
         if hasattr(self, "config_status_label"):
             self.config_status_label.setText(status_text)
 
+    # ------------------------------------------------------------------
+    # Recording lifecycle (implemented by RecordingController)
+    # ------------------------------------------------------------------
+
     def start_recording(self):
         """Start recording process"""
-        try:
-            if self.is_recording:
-                logger.warning("Recording already in progress")
-                return False
-
-            if not self.yaml_parser.is_loaded():
-                logger.error("No configuration loaded - cannot start recording")
-                return False
-
-            # Create subscribers now (at recording start, not at config load)
-            logger.info("Creating ROS subscribers for recording...")
-            subscriber_results = self.topic_subscribers.create_subscribers_for_containers(
-                self.topic_containers.containers
-            )
-            successful = sum(subscriber_results.values())
-            logger.info(
-                f"Subscribers created: {successful}/{len(self.topic_containers.containers)}"
-            )
-
-            # Start recording with DataRecorder
-            dataset_name = self.yaml_parser.get_dataset_name()
-            demo_name = f"{dataset_name}_{int(time.time())}"
-            success = self.data_recorder.start_recording(
-                self.topic_subscribers, demo_name
-            )
-
-            if success:
-                CustomMessageBox.info(
-                    "Started Recording",
-                    "Please check Record Page to visualize the topics.",
-                )
-
-                # IMPORTANT: Set RecordPage recording state
-                self.is_recording = True
-                self.recording_start_time = time.time()
-
-                # Update container statuses
-                self.container_manager.set_statuses_by_data(
-                    "Recording (Data Available)", "Recording (Waiting for Data)"
-                )
-
-                logger.info(f"Started recording: {demo_name}")
-
-                # Update UI buttons if they exist
-                if hasattr(self.ui, "btn_start_record"):
-                    self.ui.btn_start_record.setEnabled(False)
-                if hasattr(self.ui, "btn_pause_record"):
-                    self.ui.btn_pause_record.setEnabled(True)
-                if hasattr(self.ui, "btn_stop_record"):
-                    self.ui.btn_stop_record.setEnabled(True)
-
-                return True
-            else:
-                logger.error("Failed to start recording")
-                CustomMessageBox.error(
-                    "Recording Error",
-                    "Could not start recording. Please check the config and topics.",
-                )
-                return False
-
-        except TfTopicSubscriptionError as e:
-            # A configured custom tf_topic/tf_static_topic could not be
-            # subscribed to, or never produced the requested transform.
-            # Recording must NOT start on a silent fallback to the default
-            # /tf, /tf_static tree — fail loudly and visibly instead.
-            logger.error(f"Custom TF topic subscription failed: {e}")
-            CustomMessageBox.error(
-                "TF Topic Error",
-                f"A configured TF topic could not be read:\n\n{e}\n\n"
-                "Recording was NOT started — it will not silently fall back "
-                "to the default /tf, /tf_static topics. Check that the "
-                "topic is being published and that tf_topic/tf_static_topic "
-                "in your config are correct.",
-            )
-            return False
-        except Exception as e:
-            logger.error(f"Error starting recording: {e}")
-            return False
+        return self.recording.start_recording()
 
     def pause_recording(self):
         """Pause recording process"""
-        try:
-            if not self.is_recording:
-                logger.warning("No recording in progress to pause")
-                return False
-
-            success = self.data_recorder.pause_recording()
-
-            if success:
-                # Update container statuses
-                self.container_manager.set_status_for_all("Paused")
-
-                logger.info("Recording paused")
-
-                # Update UI buttons
-                if hasattr(self.ui, "btn_pause_record"):
-                    self.ui.btn_pause_record.setText("Resume")
-                    # Disconnect old connection and connect resume
-                    self.ui.btn_pause_record.clicked.disconnect()
-                    self.ui.btn_pause_record.clicked.connect(self.resume_recording)
-
-                return True
-            else:
-                logger.error("Failed to pause recording")
-                return False
-
-        except Exception as e:
-            logger.error(f"Error pausing recording: {e}")
-            return False
+        return self.recording.pause_recording()
 
     def resume_recording(self):
         """Resume recording process"""
-        try:
-            success = self.data_recorder.resume_recording()
-
-            if success:
-                # Update container statuses
-                self.container_manager.set_statuses_by_data(
-                    "Recording (Data Available)", "Recording (Waiting for Data)"
-                )
-
-                logger.info("Recording resumed")
-
-                # Update UI buttons
-                if hasattr(self.ui, "btn_pause_record"):
-                    self.ui.btn_pause_record.setText("Pause")
-                    # Disconnect old connection and connect pause
-                    self.ui.btn_pause_record.clicked.disconnect()
-                    self.ui.btn_pause_record.clicked.connect(self.pause_recording)
-
-                return True
-            else:
-                logger.error("Failed to resume recording")
-                return False
-
-        except Exception as e:
-            logger.error(f"Error resuming recording: {e}")
-            return False
+        return self.recording.resume_recording()
 
     def stop_recording(self):
         """Stop recording process"""
-        try:
-            if not self.is_recording:
-                logger.warning("No recording in progress")
-                return False
-
-            # Stop recording
-            success = self.data_recorder.stop_recording()
-
-            if success:
-                self.is_recording = False
-                recording_duration = (
-                    time.time() - self.recording_start_time
-                    if self.recording_start_time
-                    else 0
-                )
-
-                # Track this demo for the session and run an automatic viability check
-                file_path = self.data_recorder.h5_file_path
-                if file_path:
-                    self.session_h5_files.append(file_path)
-                    try:
-                        self.last_validation_result = self._demo_validator.validate(file_path)
-                        if self.last_validation_result.overall_status == CheckStatus.FAIL:
-                            CustomMessageBox.warning(
-                                f"Demo saved but failed validation:\n\n"
-                                f"{self.last_validation_result.summary_text()}",
-                                title="Demo Validation Failed",
-                            )
-                    except Exception as e:
-                        logger.error(f"Error validating demo: {e}")
-
-                # Destroy all subscribers — they will be re-created on next recording start
-                self.topic_subscribers.clear_all_subscribers()
-                logger.info("Subscribers destroyed after recording stopped")
-
-                # Update container statuses
-                self.container_manager.set_statuses_by_data(
-                    "Stopped (Data Available)", "Stopped (No Data)"
-                )
-
-                logger.info(
-                    f"Stopped recording. Duration: {recording_duration:.2f} seconds"
-                )
-
-                # Update UI buttons
-                if hasattr(self.ui, "btn_start_record"):
-                    self.ui.btn_start_record.setEnabled(True)
-                if hasattr(self.ui, "btn_pause_record"):
-                    self.ui.btn_pause_record.setEnabled(False)
-                    self.ui.btn_pause_record.setText("Pause")  # Reset text
-                    # Reconnect to pause function
-                    self.ui.btn_pause_record.clicked.disconnect()
-                    self.ui.btn_pause_record.clicked.connect(self.pause_recording)
-                if hasattr(self.ui, "btn_stop_record"):
-                    self.ui.btn_stop_record.setEnabled(False)
-
-                return True
-            else:
-                logger.error("Failed to stop recording")
-                return False
-
-        except Exception as e:
-            logger.error(f"Error stopping recording: {e}")
-            return False
+        return self.recording.stop_recording()
 
     def remove_session_file(self, path: str):
         """Prune a demo file from this session's tracked recordings (e.g. after deletion)."""
-        if path in self.session_h5_files:
-            self.session_h5_files.remove(path)
+        self.recording.remove_session_file(path)
+
+    @property
+    def is_recording(self):
+        return self.recording.is_recording
+
+    @property
+    def recording_start_time(self):
+        return self.recording.recording_start_time
+
+    @property
+    def session_h5_files(self):
+        return self.recording.session_h5_files
+
+    @property
+    def last_validation_result(self):
+        return self.recording.last_validation_result
 
     def get_container_data(self, input_name):
         """Get the latest ROS data for a container by input name"""
@@ -410,46 +219,9 @@ class RecordPage:
         """Get container by input name"""
         return self.container_manager.get_container_by_input_name(input_name)
 
-    def get_all_topic_data(self):
-        """Get all current topic data"""
-        return self.topic_subscribers.get_content()
-
-    def get_recording_summary(self):
-        """Get a comprehensive summary of the recording setup"""
-        if not self.yaml_parser.is_loaded():
-            return None
-
-        # Get subscriber summary
-        subscriber_summary = self.topic_subscribers.get_all_data_summary()
-
-        # Get recording status
-        recording_status = self.data_recorder.get_recording_status()
-
-        config = {
-            "input_data": self.yaml_parser.get_input_data(),
-            "output_data": self.yaml_parser.get_output_data(),
-            "config_data": self.yaml_parser.get_config_data(),
-            "topic_data": self.yaml_parser.get_topic_data(),
-            "prefix_path": self.yaml_parser.get_prefix_path(),
-            "containers": self.get_all_container_info(),
-            "subscribers": subscriber_summary,
-            "recording_status": recording_status,
-            "topics_with_data": [
-                cid
-                for cid in subscriber_summary["subscriber_details"]
-                if cid.get("has_data", False)
-            ],
-        }
-
-        return config
-
     def get_all_container_info(self):
         """Get information about all containers"""
         return self.container_manager.get_all_container_info()
-
-    def wait_for_all_data(self, timeout=10.0):
-        """Wait for all containers to receive data"""
-        return self.container_manager.wait_for_all_data(timeout)
 
     def restart_failed_subscribers(self):
         """Restart subscribers that failed to create or stopped working"""
@@ -466,10 +238,6 @@ class RecordPage:
     def on_window_resize(self):
         """Handle window resize events"""
         self.container_manager.on_window_resize()
-
-    def set_visualization_rate(self, rate_hz):
-        """Set the visualization update rate"""
-        self.container_visualizer.set_update_rate(rate_hz)
 
     def setup_connections(self):
         """Setup all button connections"""
@@ -488,24 +256,8 @@ class RecordPage:
                     self.update_container_statuses
                 )
 
-            ## Buttons to start, record and pause
-            if hasattr(self.ui, "btn_start_record"):
-                self.ui.btn_start_record.clicked.connect(self.start_recording)
-                self.ui.btn_start_record.setEnabled(False)
-
-            # Connect pause button to pause_recording method
-            if hasattr(self.ui, "btn_pause_record"):
-                self.ui.btn_pause_record.clicked.connect(self.pause_recording)
-                self.ui.btn_pause_record.setEnabled(False)
-                self.ui.btn_pause_record.setText("Pause")  # Set initial text
-
-            if hasattr(self.ui, "btn_stop_record"):
-                self.ui.btn_stop_record.clicked.connect(self.stop_recording)
-                self.ui.btn_stop_record.setEnabled(False)
+            # Start / Pause(Resume) / Stop: each connected once by the controller
+            self.recording.connect_buttons()
 
         except Exception as e:
             logger.error("Error setting up connections.")
-
-    def debug_containers(self):
-        """Debug method to inspect container widgets"""
-        self.container_manager.debug_containers()

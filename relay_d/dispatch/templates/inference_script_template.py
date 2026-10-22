@@ -39,7 +39,7 @@ def main():
   parser.add_argument("--obs-wait",
                       type=float,
                       default=5.0,
-                      help="Seconds to wait for all observations before starting inference (default: 10.0)")
+                      help="Seconds to wait for all observations before starting inference (default: 5.0)")
 
   # Override action horizon for diffusion policy models
   parser.add_argument("--action-horizon",
@@ -50,6 +50,10 @@ def main():
                             "value baked into the checkpoint's training config. Only used "
                             "with --backend custom --model-type diffusion (or auto-detected "
                             "diffusion). Must be within [1, pred_horizon - (obs_horizon - 1)].")
+
+  parser.add_argument("--model-type",
+                      default="auto",
+                      help="Model type for the custom backend (default: auto-detect from the checkpoint)")
 
   # Select inference backend implementation
   parser.add_argument("--backend",

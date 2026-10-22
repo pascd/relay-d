@@ -149,7 +149,7 @@ def _check_success(msg: Any, fb_cfg: dict, default_field: str = "reached") -> bo
     try:
         return _get_nested(msg, field) == expected
     except Exception as e:
-        logger.warn(
+        logger.warning(
             f"[ActionDispatcher] feedback success_field '{field}' not found "
             f"on {type(msg).__name__}: {e}"
         )
@@ -171,7 +171,7 @@ def _fill_msg(msg: Any, cfg: dict, slice_values: np.ndarray, node: Node) -> None
             else:
                 _set_nested(msg, field_path, slice_values[slice_idx])
         except Exception as e:
-            logger.warn(
+            logger.warning(
                 f"[ActionDispatcher] Failed to set {field_path}: {e}"
             )
 
@@ -193,6 +193,7 @@ class ActionDispatcher:
         self._goal_classes: Dict[str, Any] = {}
         self._msg_classes: Dict[str, Any] = {}
         self._last_sent: Dict[str, str] = {}
+        self._procs: Dict[str, subprocess.Popen] = {}
 
         # feedback: -- opt-in ack-wait for topic entries (see _wait_for_ack)
         self._ack_latest: Dict[str, Any] = {}
@@ -278,6 +279,9 @@ class ActionDispatcher:
     # -------------------------------------------------------------------------
 
     def dispatch(self, action: np.ndarray) -> None:
+        if not np.isfinite(action).all():
+            logger.error(f"[ActionDispatcher] Non-finite action, not dispatching: {action}")
+            return
         for name, cfg in self._action_configs.items():
 
             slice_values = action[cfg["indices"]]
@@ -301,6 +305,9 @@ class ActionDispatcher:
                 cmd = self._render_command(cfg["command"], transformed)
                 if self._last_sent.get(name) == cmd:
                     continue
+                proc = self._procs.get(name)
+                if proc is not None and proc.poll() is None:
+                    continue  # previous command still running: retry next tick, don't pile up
                 self._last_sent[name] = cmd
                 self._dispatch_command(name, cfg, cmd)
 
@@ -312,10 +319,11 @@ class ActionDispatcher:
                 self._last_sent[name] = key
                 self._dispatch_action(name, cfg, transformed)
 
-            # Publisher path
+            # Publisher path: sent every tick (controllers with a watchdog need a stream);
+            # set `dedupe: true` on the entry to skip repeats.
             else:
                 key = str(transformed)
-                if self._last_sent.get(name) == key:
+                if cfg.get("dedupe", False) and self._last_sent.get(name) == key:
                     continue
                 self._last_sent[name] = key
                 self._dispatch_topic(name, cfg, transformed)
@@ -331,13 +339,13 @@ class ActionDispatcher:
             f"[ActionDispatcher] Running command for '{name}':\n  {cmd}"
         )
         try:
-            subprocess.Popen(
+            self._procs[name] = subprocess.Popen(
                 shlex.split(cmd),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
         except Exception as e:
-            logger.warn(
+            logger.warning(
                 f"[ActionDispatcher] Command failed for '{name}': {e}\n  cmd: {cmd}"
             )
 
@@ -394,12 +402,12 @@ class ActionDispatcher:
                         if (stamp.sec, stamp.nanosec) != (sent_stamp.sec, sent_stamp.nanosec):
                             continue  # stale ack from an earlier command
                     except Exception as e:
-                        logger.warn(
+                        logger.warning(
                             f"[ActionDispatcher] '{name}' correlation_field "
                             f"'{correlation_field}' not found on ack: {e}"
                         )
                 if not _check_success(ack, fb_cfg):
-                    logger.warn(f"[ActionDispatcher] '{name}' did not report success.")
+                    logger.warning(f"[ActionDispatcher] '{name}' did not report success.")
                 return
         self._handle_timeout(name, fb_cfg, timeout)
 
@@ -416,13 +424,13 @@ class ActionDispatcher:
         )
         if fb_cfg.get("on_timeout", "warn") == "raise":
             raise RuntimeError(msg)
-        logger.warn(msg + "; proceeding anyway.")
+        logger.warning(msg + "; proceeding anyway.")
 
     def _dispatch_action(self, name: str, cfg: dict, slice_values: np.ndarray) -> None:
         client = self._action_clients[name]
 
         if not client.server_is_ready():
-            logger.warn(
+            logger.warning(
                 f"[ActionDispatcher] Action server '{cfg['topic']}' not ready, skipping."
             )
             return
@@ -492,7 +500,7 @@ class ActionDispatcher:
         def _on_goal_response(f):
             goal_handle = f.result()
             if not goal_handle.accepted:
-                logger.warn(f"[ActionDispatcher] Goal rejected by '{name}'")
+                logger.warning(f"[ActionDispatcher] Goal rejected by '{name}'")
                 holder["rejected"] = True
                 ev.set()
                 return
@@ -517,7 +525,7 @@ class ActionDispatcher:
         if holder.get("rejected"):
             return
         if source == "result" and not _check_success(holder.get("msg"), fb_cfg):
-            logger.warn(f"[ActionDispatcher] '{name}' action did not report success.")
+            logger.warning(f"[ActionDispatcher] '{name}' action did not report success.")
 
     def _init_goal(self, goal: Any, init_cfg: dict, name: str) -> None:
         """
@@ -578,7 +586,7 @@ class ActionDispatcher:
                     setattr(obj, last_name, value)
 
             except Exception as e:
-                logger.warn(
+                logger.warning(
                     f"[ActionDispatcher] goal_init failed for "
                     f"'{name}.{field_path}': {e}"
                 )
@@ -600,7 +608,7 @@ class ActionDispatcher:
                 result = result.replace(f"{{I[{idx}]}}", formatted)
 
         if re.search(r'\{I\[\d+\]\}', result):
-            logger.warn(
+            logger.warning(
                 f"[ActionDispatcher] Command template has unreplaced placeholders "
                 f"(action slice has {len(values)} values): {result!r}"
             )
@@ -629,7 +637,7 @@ class ActionDispatcher:
         result = slice_values.copy().astype(np.float32)
 
         if span == 0.0:
-            logger.warn(
+            logger.warning(
                 f"[ActionDispatcher] normalized_range has zero span "
                 f"({model_min} == {model_max}); skipping denormalization."
             )
@@ -696,6 +704,6 @@ class ActionDispatcher:
     def _goal_response_callback(self, future: Any, name: str) -> None:
         goal_handle = future.result()
         if not goal_handle.accepted:
-            logger.warn(
+            logger.warning(
                 f"[ActionDispatcher] Goal rejected by '{name}'"
             )
