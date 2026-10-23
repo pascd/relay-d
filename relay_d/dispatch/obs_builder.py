@@ -23,14 +23,14 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, PointCloud2
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer
 
 from rosidl_runtime_py.utilities import get_message
 from relay_d.utils.config_loader import load_yaml_config
 from relay_d.utils.numerics import normalize, quat_to_euler
 from relay_d.utils.qos import subscription_qos
 from relay_d.utils.ros_media_codec import decode_image, decode_organized_pointcloud
-from relay_d.utils.tf_topic import get_or_create_tf_buffer
+from relay_d.utils.tf_topic import _TfTopicListener, get_or_create_tf_buffer
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +314,7 @@ class ObsBuilder(Node):
         # referenced by config.input, keyed the same way as the acquisition
         # side (relay_d.utils.tf_topic). Inputs that don't set tf_topic /
         # tf_static_topic default to the standard /tf, /tf_static pair,
-        # which uses the stock tf2_ros.TransformListener below. A TF input
+        # which uses the same listener class (with the stale-stamp filter) below. A TF input
         # that DOES configure a custom pair goes through
         # get_or_create_tf_buffer, which raises TfTopicSubscriptionError
         # (uncaught here — crashes node startup) if that custom topic can't
@@ -327,7 +327,7 @@ class ObsBuilder(Node):
 
         if self._tf_inputs:
             self._tf_buffer = Buffer()
-            self._tf_listener = TransformListener(self._tf_buffer, self)
+            self._tf_listener = _TfTopicListener(self._tf_buffer, self, *self._DEFAULT_TF_KEY)
             self._tf_buffers[self._DEFAULT_TF_KEY] = self._tf_buffer
             self._tf_listeners[self._DEFAULT_TF_KEY] = self._tf_listener
 

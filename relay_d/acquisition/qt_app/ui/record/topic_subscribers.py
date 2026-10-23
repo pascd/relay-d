@@ -8,6 +8,7 @@ from relay_d.utils import user_settings
 from relay_d.utils.qos import subscription_qos
 from relay_d.utils.tf_topic import (
     TfTopicSubscriptionError,
+    _TfTopicListener,
     get_or_create_tf_buffer,
     wait_for_transform,
 )
@@ -21,9 +22,8 @@ from geometry_msgs.msg import Twist, PoseStamped
 from std_msgs.msg import Bool
 
 try:
-    from tf2_ros import TransformListener, Buffer
+    from tf2_ros import Buffer
 except ImportError:
-    TransformListener = None
     Buffer = None
     logger.warning("tf2_ros not available")
 
@@ -72,7 +72,7 @@ class TopicSubscribers(Node):
         self._TOPIC_DISCOVERY_POLL = 0.3
 
         try:
-            from tf2_ros import TransformListener, Buffer
+            from tf2_ros import Buffer
 
             self.tf_buffer = Buffer(cache_time=rclpy_duration(seconds=10.0))
 
@@ -84,7 +84,7 @@ class TopicSubscribers(Node):
             # `self`) avoids racing with the shared spin_once calls elsewhere
             # (data_recorder, AppAPI, the Qt spin timer) that also spin `self`.
             self._tf_node = rclpy.create_node(f"topic_subscribers_tf_listener_{id(self)}")
-            self.tf_listener = TransformListener(self.tf_buffer, self._tf_node, spin_thread=False)
+            self.tf_listener = _TfTopicListener(self.tf_buffer, self._tf_node, *self._DEFAULT_TF_KEY)
             self._tf_executor = SingleThreadedExecutor()
             self._tf_executor.add_node(self._tf_node)
             self._tf_spin_thread = Thread(target=self._tf_executor.spin, daemon=True)

@@ -128,9 +128,9 @@ SETTINGS: Tuple[Setting, ...] = (
        "A new mp4 file starts after this size.", minimum=1, maximum=10_000),
     # ---- Training
     _s("python_robomimic", "Training", "Python for robomimic", "file", "",
-       "Interpreter with robomimic installed (empty: the one running Relay-D)."),
+       "Interpreter that trains and runs robomimic policies (empty: the environment built by the Train tab, else the one running Relay-D)."),
     _s("python_lerobot", "Training", "Python for LeRobot", "file", "",
-       "Interpreter with lerobot installed (empty: the one running Relay-D)."),
+       "Interpreter that trains and runs LeRobot policies (empty: the environment built by the Train tab, else the one running Relay-D)."),
     _s("train_use_terminal", "Training", "Open a terminal window for each run", "bool", True,
        "Off: runs in the background and logs to train.log."),
     _s("train_default_device", "Training", "Default training device", "choice", "cuda", "", ("cuda", "cpu")),

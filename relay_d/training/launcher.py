@@ -102,9 +102,12 @@ def _robomimic_summary(path: Path) -> Optional[Dict[str, Any]]:
                 return None
             demos = [k for k in f["data"] if isinstance(f["data"][k], h5py.Group)]
             obs_keys = list(f["data"][demos[0]]["obs"]) if demos and "obs" in f["data"][demos[0]] else []
+            frames = lambda names: int(sum(f["data"][d].attrs.get("num_samples", 0) for d in names if d in f["data"]))  # noqa: E731
+            train = [k.decode() if isinstance(k, bytes) else str(k) for k in f["mask"]["train"][:]] if "train" in f["mask"] else demos
             return {
                 "episodes": len(demos),
-                "frames": int(sum(f["data"][d].attrs.get("num_samples", 0) for d in demos)),
+                "frames": frames(demos),
+                "train_frames": frames(train),  # what one epoch is made of
                 "has_valid": "valid" in f["mask"],
                 "obs_keys": obs_keys,
             }
@@ -234,6 +237,9 @@ def default_params(dataset: DatasetInfo, policy: Optional[str] = None) -> Dict[s
         }
     cfg = _robomimic_base_config(dataset, policy)
     out = {key: _get_path(cfg, path) for key, (path, _type, _label) in ROBOMIMIC_PARAMS.items()}
+    train_frames = dataset.summary.get("train_frames")
+    if train_frames and out.get("batch_size"):
+        out["batch_size"] = max(1, min(int(out["batch_size"]), train_frames))  # a batch larger than the data makes no batch at all
     out["device"] = user_settings.get("train_default_device")  # the Settings page chooses the default device
     return out
 
@@ -271,12 +277,22 @@ def build_command(job: TrainJob, run_dir: Path, write: bool = True) -> List[str]
         cfg = _robomimic_base_config(ds, job.policy)
         for key, value in params.items():
             _set_path(cfg, ROBOMIMIC_PARAMS[key][0], value == "cuda" if key == "device" else value)
+        train_frames, batch = ds.summary.get("train_frames"), _get_path(cfg, ROBOMIMIC_PARAMS["batch_size"][0])
+        if train_frames is not None and batch and batch > train_frames:
+            if "batch_size" in params:
+                # robomimic drops the last incomplete batch: with fewer samples than one batch an epoch has no batch and it crashes (StopIteration)
+                raise TrainingError(
+                    f"the training split has {train_frames} frames, fewer than the batch size {batch}: robomimic only trains on "
+                    f"complete batches, so it would find none. Set the batch size to {train_frames} or less, or record more demos."
+                )
+            _set_path(cfg, ROBOMIMIC_PARAMS["batch_size"][0], train_frames)  # nobody chose a size: use what fits (like default_params)
         name = run_dir.name
         _set_path(cfg, "train.data", str(ds.path))
         _set_path(cfg, "train.output_dir", str(run_dir / "output"))
         _set_path(cfg, "experiment.name", name)
         if not ds.summary.get("has_valid", True):  # no validation split in the file: nothing to validate on
             _set_path(cfg, "experiment.validate", False)
+            _set_path(cfg, "train.hdf5_validation_filter_key", None)  # robomimic refuses a filter key when validation is off
         config_path = run_dir / "robomimic_config.json"
         if write:
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -314,6 +330,8 @@ printf '$ %s\n\n' {quoted}
 trap 'interrupted=1' INT
 {command} 2>&1 | tee -a train.log
 code=${{PIPESTATUS[0]}}
+# robomimic catches its own crash, prints "run failed with error" and returns 0: that is a failure
+if [ "$code" = 0 ] && grep -q "run failed with error" train.log 2>/dev/null; then code=1; fi
 if [ -n "$interrupted" ]; then
     echo 130 > exit_code
     exit 0  # you pressed Ctrl+C: close the window now (a normal end or a crash still waits, so you can read it)
@@ -447,6 +465,9 @@ def check_environment(python: str, fmt: str, timeout: float = 60.0) -> Dict[str,
         return {"ok": False, "package": False, "torch": None, "cuda": False, "error": str(e) or type(e).__name__}
     if not result["package"]:
         error = f"'{package}' is not installed for {python}"
+        error += f". Use the 'Set up {fmt} environment' button in the Train tab to build one"
+        if fmt == LEROBOT:
+            error += " (or: pip install 'lerobot[training]', and 'lerobot[diffusion]' for Diffusion)"
     elif not result["torch"]:
         error = f"torch is missing for {python}"
     else:

@@ -1,4 +1,5 @@
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import QLabel, QSizePolicy
 from relay_d.utils.coloring_logger import logger
 
 # Import utils
@@ -6,6 +7,7 @@ from ..config.yaml_parser import YamlParser
 from ..containers.topic_containers import TopicContainers
 from ..record.topic_subscribers import TopicSubscribers
 from ..record.container_visualizer import ContainerVisualizer
+from ..page_style import add_page_header, page_layout
 from ..record.data_recorder import DataRecorder
 from ..record.container_manager import ContainerManager
 from ..record.recording_controller import RecordingController
@@ -17,6 +19,20 @@ class RecordPage:
         self.ui = ui_instance
         self.yaml_parser = yaml_parser
         self.settings_page = settings_page
+        page = getattr(ui_instance, "page_start", None)
+        self.label_no_config = None
+        if page is not None and page.layout() is None:  # same title and margins as every page; the containers are added below it
+            root = page_layout(page)
+            add_page_header(root, "Record")
+            self.label_no_config = QLabel(
+                "No config loaded.\n\nLoad one on the Configuration page (insert a file, or build one with \"Build from ROS\"): "
+                "the live view of its topics appears here, and recording starts from here."
+            )
+            self.label_no_config.setObjectName("pageHint")
+            self.label_no_config.setWordWrap(True)
+            self.label_no_config.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            self.label_no_config.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            root.addWidget(self.label_no_config, 1)
         self.topic_containers = TopicContainers(ui_instance)
 
         # Initialize the TopicSubscribers
@@ -61,10 +77,6 @@ class RecordPage:
 
     def _on_settings_changed(self, settings):
         """Handle settings changes via signal"""
-        if "hdf5_save_folder" in settings:
-            self.data_recorder.set_output_directory(settings["hdf5_save_folder"])
-            logger.info(f"HDF5 save folder updated to: {settings['hdf5_save_folder']}")
-
         if "freeze_containers" in settings:
             logger.info(f"Freeze containers set to {settings['freeze_containers']}")
 
@@ -92,6 +104,8 @@ class RecordPage:
     def _on_config_loaded(self, file_path):
         """Handle config loaded signal"""
         logger.info(f"Config loaded from: {file_path}")
+        if self.label_no_config is not None:
+            self.label_no_config.hide()
 
         # Load config first
         self.yaml_parser.load_yaml_file(file_path)
@@ -130,6 +144,8 @@ class RecordPage:
     def _on_config_cleared(self):
         """Handle config cleared signal"""
         logger.info("Config cleared")
+        if self.label_no_config is not None:
+            self.label_no_config.show()
 
         # Stop TF update timer
         self.tf_update_timer.stop()

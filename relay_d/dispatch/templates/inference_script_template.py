@@ -1,5 +1,9 @@
-from relay_d.dispatch.api import InferenceSession
 import argparse
+import os
+import sys
+
+from relay_d.dispatch.api import InferenceSession, detect_backend
+from relay_d.dispatch.reexec import reexec_if_needed
 
 # Default configuration file paths
 ACTION_CONFIG="./action_config.yaml"
@@ -55,6 +59,14 @@ def main():
 
   # Parse command-line arguments
   args = parser.parse_args()
+
+  # The package of the backend (lerobot / robomimic) may live in another environment, e.g. the one built by the Train tab:
+  # then this script starts again with that Python (same arguments).
+  try:
+    reexec_if_needed(args.backend if args.backend != "auto" else detect_backend(args.checkpoint),
+                     [os.path.abspath(sys.argv[0]), *sys.argv[1:]])
+  except ValueError:
+    pass  # an unknown checkpoint: InferenceSession reports it
 
   # Initialize inference session with parsed arguments
   session = InferenceSession(

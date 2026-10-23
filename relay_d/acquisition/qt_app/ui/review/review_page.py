@@ -33,6 +33,7 @@ from PyQt5.QtGui import QImage, QPixmap, QColor, QBrush
 
 from relay_d.utils import user_settings
 from relay_d.utils.coloring_logger import logger
+from ..page_style import add_page_header, page_layout
 from ..settings.config_manager import config
 from ...utils.custom_message_box import CustomMessageBox
 from ...utils.demo_file_ops import delete_demo_file
@@ -97,7 +98,12 @@ class ReviewPage:
 
     def _build_ui(self):
         page = self.ui.page_review
-        root_layout = QHBoxLayout(page)
+        outer = page_layout(page)
+        add_page_header(outer, "Review")
+        root_layout = QHBoxLayout()  # session list on the left, the tabs on the right
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(12)
+        outer.addLayout(root_layout, 1)
 
         # --- Sidebar: session picker + demo list ---
         sidebar = QWidget()
@@ -224,7 +230,9 @@ class ReviewPage:
 
         frame_row = QHBoxLayout()
         frame_row.addWidget(QLabel("Fixed frame:"))
-        self.edit_fixed_frame = QLineEdit(user_settings.get("review_default_fixed_frame"))
+        self._fixed_frame_default = user_settings.get("review_default_fixed_frame")
+        self.edit_fixed_frame = QLineEdit(self._fixed_frame_default)
+        config.settings_changed.connect(self._on_settings_changed)
         frame_row.addWidget(self.edit_fixed_frame, 1)
         layout.addLayout(frame_row)
 
@@ -816,6 +824,16 @@ class ReviewPage:
         is_file_mode = self.radio_urdf_file.isChecked()
         self.widget_urdf_file_row.setVisible(is_file_mode)
         self.widget_robot_desc_topic_row.setVisible(not is_file_mode)
+
+    def _on_settings_changed(self, values):
+        """The fixed frame follows its setting, unless the user typed another one here."""
+        new = values.get("review_default_fixed_frame")
+        try:
+            if new is not None and self.edit_fixed_frame.text() == self._fixed_frame_default:
+                self.edit_fixed_frame.setText(new)
+        except RuntimeError:  # widget deleted
+            return
+        self._fixed_frame_default = new
 
     def _browse_urdf_file(self):
         path, _ = QFileDialog.getOpenFileName(

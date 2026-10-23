@@ -37,12 +37,12 @@ class ConfigManager(QObject):
         self.settings_changed.emit(self.settings)
 
     def get(self, key, default=None):
-        return self.settings.get(key, default)
+        return user_settings.get(key, default)  # one store: same value the command-line tools read
 
     def config_dialog_dir(self):
         """Start folder for config dialogs: config_folder, else hdf5_load_folder, else ''."""
         for key in ("config_folder", "hdf5_load_folder"):
-            folder = self.settings.get(key)
+            folder = user_settings.get(key)
             if folder and os.path.isdir(folder):
                 return folder
         return ""

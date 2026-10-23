@@ -49,7 +49,7 @@ class DataRecorder(Node):
         self.recording_metadata = {}
         self.current_demo_number = 0
 
-        self.recording_frequency = user_settings.get("rec_default_frequency")  # the config file's value wins
+        self._apply_setting_defaults()  # the config file's values win (below, and again at each start_recording)
 
         # Update from yaml_parser if available
         if self.yaml_parser and self.yaml_parser.is_loaded():
@@ -57,7 +57,6 @@ class DataRecorder(Node):
             self.recording_frequency = config.get("recording_frequency", self.recording_frequency)
         # Samples live in RAM until Stop. Past this many bytes of frames the loop stops
         # sampling (Stop still saves what is buffered) instead of running the PC out of memory.
-        self.max_buffer_bytes = int(user_settings.get("rec_default_max_buffer_mb")) * 1024**2
         self._buffered_bytes = 0
         self._unsaved = False  # a save failed and the samples are still only in memory
         self.buffer_full = False  # the loop stopped sampling because max_buffer_bytes was reached
@@ -69,8 +68,6 @@ class DataRecorder(Node):
 
         self.timestamps = []
         self.timestamp_spreads = []
-        self._sync_tolerance = user_settings.get("rec_default_sync_tolerance_sec") or None  # 0 = off
-        self._sync_mode = user_settings.get("rec_default_sync_mode")
 
         self._stream_builder = StreamBuilder(self.yaml_parser)
         self._fill_gaps_containers = set()
@@ -130,6 +127,13 @@ class DataRecorder(Node):
             logger.error(f"Failed to resume recording: {e}")
             return False
 
+    def _apply_setting_defaults(self):
+        """The ``rec_default_*`` settings as they are now (a change in Settings applies to the next recording)."""
+        self.recording_frequency = user_settings.get("rec_default_frequency")
+        self.max_buffer_bytes = int(user_settings.get("rec_default_max_buffer_mb")) * 1024**2
+        self._sync_tolerance = user_settings.get("rec_default_sync_tolerance_sec") or None  # 0 = off
+        self._sync_mode = user_settings.get("rec_default_sync_mode")
+
     def start_recording(self, topic_subscribers, demo_name=None, flush_stale_data=False):
         try:
             with self.recording_lock:
@@ -147,6 +151,7 @@ class DataRecorder(Node):
                         return False
 
                 self.topic_subscribers = topic_subscribers
+                self._apply_setting_defaults()
 
                 if demo_name is None:
                     demo_name = f"demo_{self.current_demo_number}"
@@ -179,6 +184,7 @@ class DataRecorder(Node):
                     self.max_buffer_bytes = int(
                         float(config.get("max_buffer_mb") or user_settings.get("rec_default_max_buffer_mb")) * 1024**2
                     )
+                    self.recording_metadata["recording_frequency"] = self.recording_frequency
                     logger.info(f"Recording frequency: {self.recording_frequency} Hz")
                     self._sync_tolerance = config.get(
                         "sync_tolerance_sec", user_settings.get("rec_default_sync_tolerance_sec") or None
@@ -566,15 +572,9 @@ class DataRecorder(Node):
             self.current_demo_number += 1
         return saved
 
-    def set_output_directory(self, folder):
-        """Record into ``folder`` from now on. The current session folder is dropped (unless a recording or an
-        unsaved demo needs it), so the next demo opens a new session folder in the new location."""
-        folder = folder or None
-        if folder == self.output_directory:
-            return
-        self.output_directory = folder
-        if not (self.is_recording or self._unsaved):
-            self.recorded_data_dir = None
+    def _recordings_base(self):
+        """Folder the sessions go into, read when a demo starts: an explicit ``output_directory`` (AppAPI), else the setting."""
+        return self.output_directory or user_settings.get("hdf5_save_folder") or os.path.join(os.path.expanduser("~"), "lfd_recordings")
 
     @staticmethod
     def _session_folder_name():
@@ -583,15 +583,16 @@ class DataRecorder(Node):
         return name.replace(os.sep, "_") or datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     def _create_h5_file(self, demo_name):
-        """Create H5 file for recording data, reusing session folder if already set."""
+        """Create the H5 file of a demo in the current session folder. A session folder is reused only while it is still
+        inside the recordings folder: after a change in Settings the next demo opens a new session there."""
         try:
-            if self.recorded_data_dir and os.path.exists(self.recorded_data_dir):
+            base = self._recordings_base()
+            same_base = self.recorded_data_dir and os.path.normpath(os.path.dirname(self.recorded_data_dir)) == os.path.normpath(base)
+            if same_base and os.path.exists(self.recorded_data_dir):
                 output_dir = self.recorded_data_dir
-            elif self.output_directory:
-                output_dir = os.path.join(self.output_directory, self._session_folder_name())
             else:
-                base = user_settings.get("hdf5_save_folder") or os.path.join(os.path.expanduser("~"), "lfd_recordings")
                 output_dir = os.path.join(base, self._session_folder_name())
+                logger.info(f"Recording session folder: {output_dir} (recordings folder: {base})")
 
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)

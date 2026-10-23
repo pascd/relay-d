@@ -2,6 +2,7 @@
 
 import json
 import os
+import shlex
 import stat
 
 import h5py
@@ -13,11 +14,12 @@ from relay_d.training import launcher, runs
 from relay_d.training.launcher import LEROBOT, ROBOMIMIC, TrainingError, TrainJob
 
 
-def _robomimic_file(path, valid=True):
+def _robomimic_file(path, valid=True, frames=150):
+    """Two demos; ``frames`` is the declared length of each (enough for robomimic's default batch size of 100)."""
     with h5py.File(path, "w") as f:
         for i in range(2):
             demo = f.create_group(f"data/demo_{i}")
-            demo.attrs["num_samples"] = 5
+            demo.attrs["num_samples"] = frames
             demo.create_dataset("obs/robot0_eef_pos", data=np.zeros((5, 3), np.float32))
             demo.create_dataset("obs/agentview_image", data=np.zeros((5, 4, 4, 3), np.uint8))
         f.create_dataset("mask/train", data=[b"demo_0"])
@@ -54,7 +56,7 @@ def test_find_datasets_in_a_folder_or_directly(folder):
     found = launcher.find_datasets(folder)
     assert sorted(d.format for d in found) == [LEROBOT, ROBOMIMIC]
     rm = next(d for d in found if d.format == ROBOMIMIC)
-    assert rm.summary["episodes"] == 2 and rm.summary["frames"] == 10 and rm.summary["has_valid"]
+    assert rm.summary["episodes"] == 2 and rm.summary["frames"] == 300 and rm.summary["train_frames"] == 150 and rm.summary["has_valid"]
     lr = next(d for d in found if d.format == LEROBOT)
     assert lr.summary["cameras"] == ["observation.images.cam"] and lr.summary["fps"] == 10
     assert launcher.find_datasets(folder / "lerobot_dataset_1")[0].format == LEROBOT
@@ -88,6 +90,7 @@ def test_robomimic_without_validation_split_turns_validation_off(tmp_path):
     ds = launcher.find_datasets(tmp_path)[0]
     launcher.build_command(TrainJob(ds, "py", "bc_rnn_gmm"), tmp_path / "run")
     assert json.loads((tmp_path / "run" / "robomimic_config.json").read_text())["experiment"]["validate"] is False
+    assert json.loads((tmp_path / "run" / "robomimic_config.json").read_text())["train"]["hdf5_validation_filter_key"] is None
 
 
 def test_robomimic_uses_the_folders_saved_config_when_no_policy_is_given(folder):
@@ -242,3 +245,33 @@ def test_ctrl_c_in_the_training_window_ends_the_run_and_closes_the_window(folder
     assert wait_until(lambda: not runs._alive(pid), seconds=5)  # the script exited by itself: no "Press Enter" wait
     assert (run_dir / "exit_code").read_text().strip() == "130"
     assert runs.read_run(run_dir).status == runs.STOPPED
+
+
+def test_robomimic_batch_larger_than_the_training_data_is_refused_and_the_default_fits(tmp_path):
+    _robomimic_file(tmp_path / "d.h5", frames=5)  # 5 training frames (mask/train = demo_0), 10 in total
+    ds = launcher.find_datasets(tmp_path)[0]
+    assert ds.summary["train_frames"] == 5 and ds.summary["frames"] == 10
+    assert launcher.default_params(ds, "bc_rnn_gmm")["batch_size"] == 5  # the template's 100 would make no batch
+    with pytest.raises(TrainingError, match="5 frames, fewer than the batch size 6"):  # an explicit choice that cannot work
+        launcher.build_command(TrainJob(ds, "py", "bc_rnn_gmm", {"batch_size": 6}), tmp_path / "run")
+    launcher.build_command(TrainJob(ds, "py", "bc_rnn_gmm", {}), tmp_path / "run2")  # nothing chosen: the template's 100 is capped
+    assert json.loads((tmp_path / "run2" / "robomimic_config.json").read_text())["train"]["batch_size"] == 5
+    launcher.build_command(TrainJob(ds, "py", "bc_rnn_gmm", {"batch_size": 5}), tmp_path / "run")  # exactly one batch: fine
+
+
+def test_run_script_reports_a_failure_that_robomimic_swallows(tmp_path):
+    """robomimic prints 'run failed with error' and exits 0: the run must still be recorded as failed."""
+    import subprocess
+
+    def run(body):
+        d = tmp_path / body.replace(" ", "_")[:20]
+        d.mkdir()
+        script = d / "run.sh"
+        command = f"bash -c {shlex.quote(body)}"
+        script.write_text(launcher._RUN_SCRIPT.format(name="r", command=command, quoted=shlex.quote(command)))
+        subprocess.run(["bash", str(script)], input="\n", capture_output=True, text=True, timeout=30)
+        return (d / "exit_code").read_text().strip()
+
+    assert run("echo all good") == "0"
+    assert run("echo run failed with error: x") == "1"
+    assert run("exit 3") == "3"

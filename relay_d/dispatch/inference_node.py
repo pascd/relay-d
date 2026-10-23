@@ -22,10 +22,12 @@ Usage (after `pip install -e .`):
 """
 
 import argparse
+import sys
 
 from relay_d.utils import user_settings
 
-from .api import InferenceSession
+from .api import InferenceSession, detect_backend
+from .reexec import reexec_if_needed
 
 
 def main():
@@ -49,6 +51,12 @@ def main():
                         help="lerobot only: comma-separated observations that form observation.state, in order. "
                              "Default: read from the dataset the policy was trained on")
     args = parser.parse_args()
+
+    try:  # the package of the backend may live in another environment (the one built by the Train tab)
+        backend = args.backend if args.backend != "auto" else detect_backend(args.checkpoint)
+        reexec_if_needed(backend, ["-m", "relay_d.dispatch.inference_node", *sys.argv[1:]])
+    except ValueError:
+        pass  # an unknown checkpoint: InferenceSession reports it
 
     state_keys = [k.strip() for k in args.state_keys.split(",")] if args.state_keys else None
 

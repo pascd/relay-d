@@ -103,6 +103,7 @@ class RecordingController:
 
             if not self.yaml_parser.is_loaded():
                 logger.error("No configuration loaded - cannot start recording")
+                CustomMessageBox.warning("Load a config first: recording needs one (Configuration page).", title="No config loaded")
                 return False
 
             # Create subscribers now (at recording start, not at config load)

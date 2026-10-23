@@ -14,8 +14,10 @@ from PyQt5.QtCore import QTimer, QFileSystemWatcher
 
 from relay_d.utils import user_settings
 from .ctrl_c import close_on_ctrl_c
-from .settings_apply import live_changes, ros_domain_to_set, startup_page
+from .first_run import ask_save_folder
+from .settings_apply import live_changes, needs_config, ros_domain_to_set, startup_page
 from .ui.settings.config_manager import config
+from .utils.custom_message_box import CustomMessageBox
 
 try:
     from relay_d.utils.coloring_logger import logger, apply_user_level
@@ -163,12 +165,19 @@ class UI(QMainWindow):
             self.page_settings_ui.load_settings()
 
         # Change the current widget to the start page (setting: startup_page)
+        startup_blocked = False
         try:
-            self.stackedWidget.setCurrentWidget(getattr(self, f"page_{startup_page(user_settings.values())}", self.page_help))
+            startup = getattr(self, f"page_{startup_page(user_settings.values())}", self.page_help)
+            startup_blocked = self._needs_config(startup)  # starting on the Record page without a config: open Config instead
+            self.stackedWidget.setCurrentWidget(self.page_import if startup_blocked else startup)
         except Exception as e:
             logger.error(f"Error setting initial page: {e}")
 
         self.show()
+        if not ask_save_folder(self):  # modal: nothing else can be used until a folder is chosen
+            QTimer.singleShot(0, self.close)
+        elif startup_blocked:
+            self._warn_no_config()
 
     def register_ros_node(self, node):
         """Register a ROS node to be spun"""
@@ -221,11 +230,27 @@ class UI(QMainWindow):
                 if btn_name == "btn_review" and hasattr(self, "page_review_ui"):
                     self.page_review_ui.sync_with_current_session()
                     self.page_review_ui.refresh_demo_list()
-                self.stackedWidget.setCurrentWidget(page_mapping[btn_name])
+                target = page_mapping[btn_name]
+                if self._needs_config(target):  # the Record page does nothing without a config
+                    self._warn_no_config()
+                    target = self.page_import
+                self.stackedWidget.setCurrentWidget(target)
             except Exception as e:
                 logger.error(f"Error switching to page for {btn_name}: {e}")
         else:
             logger.warning(f"No page mapped for button: {btn_name}")
+
+    def _needs_config(self, page) -> bool:
+        parser = getattr(getattr(self, "page_config", None), "yaml_parser", None)
+        return parser is not None and needs_config(page.objectName().removeprefix("page_"), parser.is_loaded())
+
+    def _warn_no_config(self):
+        CustomMessageBox.warning(
+            "Load a config before recording: the Record page needs one to know which topics to show and record.\n\n"
+            "Opening the Configuration page: insert a file, or build one with \"Build from ROS\".",
+            title="No config loaded",
+            parent=self,
+        )
 
     def _update_watcher_path(self, theme):
         """Atualiza o ficheiro que o watcher está a monitorizar."""

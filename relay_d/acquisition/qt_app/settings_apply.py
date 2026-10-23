@@ -17,6 +17,11 @@ def startup_page(settings: Mapping) -> str:
     return name if name in _PAGES else "help"
 
 
+def needs_config(page: str, config_loaded: bool) -> bool:
+    """The Record page ("start") cannot be used without a loaded config: the app opens the Config page instead."""
+    return page == "start" and not config_loaded
+
+
 def live_changes(settings: Mapping, theme: str, spin_ms: int) -> dict:
     """What a saved settings dict changes in the running window: ``theme`` and/or ``spin_ms`` (only if different)."""
     changes = {}

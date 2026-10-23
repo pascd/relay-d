@@ -120,6 +120,7 @@ def test_guards(env):
     env.yaml_parser.is_loaded.return_value = False
     assert env.ctrl.start_recording() is False
     env.recorder.start_recording.assert_not_called()
+    assert "Load a config first" in env.box.warning.call_args.args[0]  # the user is told why nothing happens
     env.yaml_parser.is_loaded.return_value = True
     assert env.ctrl.start_recording() is True
     assert env.ctrl.start_recording() is False  # already recording

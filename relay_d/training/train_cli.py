@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from relay_d.training import launcher, runs
+from relay_d.training import envsetup, launcher, runs
 from relay_d.utils import user_settings
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
@@ -98,7 +98,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     chosen = {"epochs": args.epochs, "steps": args.steps, "batch_size": args.batch_size, "learning_rate": args.lr,
               "seq_length": args.seq_length, "save_every": args.save_every, "num_workers": args.num_workers,
               "seed": args.seed, "device": args.device or user_settings.get("train_default_device")}
-    python = args.python or user_settings.get(f"python_{dataset.format}") or sys.executable
+    python = args.python or envsetup.python_for(dataset.format)  # setting, else the environment built by the Train tab
     job = launcher.TrainJob(dataset, python, args.policy, {k: v for k, v in chosen.items() if v is not None},
                             args.extra)
     try:

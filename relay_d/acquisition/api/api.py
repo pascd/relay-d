@@ -11,7 +11,6 @@ from ..qt_app.ui.postprocess.yaml_driven_converter import YAMLDrivenConverter
 from ..qt_app.ui.postprocess.postprocess_config_loader import PostprocessConfigLoader
 from ..qt_app.ui.postprocess.postprocess_options import PostprocessOptions
 from ..qt_app.ui.review.demo_validator import DemoValidator
-from relay_d.utils import user_settings
 from relay_d.utils.coloring_logger import logger
 
 class ContainerAdapter:
@@ -55,11 +54,8 @@ class AppAPI:
             else:
                 logger.error(f"Ignoring postprocess options {options_path}: {'; '.join(problems)}")
 
-        if output_dir is None:
-            output_dir = user_settings.get("hdf5_save_folder") or os.path.join(os.path.expanduser("~"), "lfd_recordings")
-
-        # Pass the output directory to the DataRecorder instance
-        self._base_output_dir = output_dir
+        # An explicit output_dir wins; otherwise the recorder reads the hdf5_save_folder setting when a session starts,
+        # so a changed setting applies to the next recording.
         self._data_recorder.output_directory = output_dir
         self._session_h5_files: list = []
         self._validator = DemoValidator()

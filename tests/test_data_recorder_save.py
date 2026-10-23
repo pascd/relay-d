@@ -1,5 +1,6 @@
 """DataRecorder._save_recorded_data without ROS: rclpy and the message packages are replaced by stubs."""
 
+import os
 import sys
 import types
 
@@ -55,20 +56,26 @@ def test_stacked_write_matches_np_stack_with_one_chunk_per_frame(recorder_cls, t
 
 
 def test_changing_the_recordings_folder_starts_a_new_session_folder(recorder_cls, tmp_path):
-    parser = types.SimpleNamespace(is_loaded=lambda: False, yaml_data=None)
-    rec = recorder_cls(parser)
-    rec.set_output_directory(str(tmp_path / "a"))
-    rec.recorded_data_dir = str(tmp_path / "a" / "2026-01-01_00-00-00")  # the session folder of the first demo
-    rec.set_output_directory(str(tmp_path / "a"))  # a settings save that did not change the folder
-    assert rec.recorded_data_dir is not None
-    rec.is_recording = True  # never move a running recording
-    rec.set_output_directory(str(tmp_path / "b"))
-    assert rec.output_directory == str(tmp_path / "b") and rec.recorded_data_dir is not None
-    rec.is_recording = False
-    rec.set_output_directory(str(tmp_path / "c"))
-    assert rec.recorded_data_dir is None  # the next demo opens a fresh session folder in "c"
-    rec.set_output_directory("")
-    assert rec.output_directory is None
+    module = sys.modules[recorder_cls.__module__]
+    rec = recorder_cls(types.SimpleNamespace(is_loaded=lambda: False, yaml_data=None))
+    module.user_settings.save({"hdf5_save_folder": str(tmp_path / "a")})
+
+    def demo(name):
+        rec._create_h5_file(name)
+        rec.h5_file.close()
+        return rec.h5_file_path
+
+    first, second = demo("d0"), demo("d1")
+    assert os.path.dirname(first) == os.path.dirname(second)  # same folder setting: one session, as before
+    assert first.startswith(str(tmp_path / "a"))
+    for state in ({}, {"_unsaved": True}, {"is_recording": True}):  # however the recorder is busy, the setting decides
+        module.user_settings.save({"hdf5_save_folder": str(tmp_path / f"b{len(state)}{''.join(state)}")})
+        for key, value in state.items():
+            setattr(rec, key, value)
+        path = demo("d2")
+        assert path.startswith(str(tmp_path / f"b{len(state)}{''.join(state)}")), path
+    rec.output_directory = str(tmp_path / "explicit")  # AppAPI(output_dir=...) wins over the setting
+    assert demo("d3").startswith(str(tmp_path / "explicit"))
 
 
 def test_a_message_that_breaks_a_processor_is_skipped_not_raised(recorder_cls):

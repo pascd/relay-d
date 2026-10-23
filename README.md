@@ -144,6 +144,18 @@ RelayDApp
 
 Three pages: **Config** (load/validate your YAML), **Record** (start/pause/stop, live sensor feeds), **Post-process** (convert raw recordings to Robomimic or LeRobot format; a config can be loaded here without the robot running).
 
+### Building the acquisition config from the running robot
+
+On the **Config** page, the **Build from ROS** tab writes `acquisition_config.yaml` for you (start your robot's drivers first):
+
+1. **Sources**: topics of the live graph (filter, double-click to add; or type a topic the graph does not show yet) and TF frames (a parent and a child, any connected pair).
+2. **Inputs**: output group, modality (`depth`, `scan`), `joint_names` (**Read joint names from the topic** takes them from one live message), gap filling. The first word of an input name (`image_`, `joint_`, `pose_`, `tf_`, ...) picks its live view on the Record page, and is suggested for you.
+3. **Observations**: tick message fields to fill the specs of a stream (`joint_1.position[:]`, `tf_eef.translation.x`; edit the text for arithmetic, `sin()/cos()` or a single element), normalize with limits typed in or filled from a URDF (file, or the latched `/robot_description`), roll/pitch/yaw for quaternions. Images and point clouds are added as camera observations.
+4. **Actions**: tick the streams that form the action, in order, with optional delta.  5. **Recording**: name, frequency, buffer, sync.
+6. **Review**: the YAML, the problems found (errors block saving) and **Save and use now**, which loads it like any hand-written file. **Edit loaded config** brings an existing file back into the builder.
+
+The headless `AppAPI`, `relay-d-convert` and the other tools still take a ready-made config file. Robomimic environment metadata, the LeRobot task and the training model stay in `postprocess_config.yaml`.
+
 ### Converting recordings without the GUI
 
 ```bash
@@ -186,6 +198,10 @@ runs the node needs `lerobot`; LeRobot 0.6 needs torch < 2.12, so it usually liv
 See `relay_d/dispatch/inference_node.py` and `relay_d/dispatch/config_templates/*.yaml` for the full set of options and config syntax.
 
 ### Training a policy (Train tab or `relay-d-train`)
+
+No environment yet? On the Train tab, **Set up lerobot / robomimic environment** builds one in `~/.relayd/envs/lerobot` or `~/.relayd/envs/robomimic` (Python 3.12, several GB, a few minutes; uses `uv` if installed; robomimic from a pinned
+source commit) and uses it by default for training **and for `lfd-inference-node`** (it starts again in that environment when the backend's package is missing in the Python that launched it). The rule everywhere: the
+"Python for LeRobot / robomimic" setting, else the environment built here, else the running Python. Your other Pythons are not changed. Pressing the button again with a built environment just uses it.
 
 The **Train** tab starts robomimic or LeRobot training on a dataset made by **Data Post Process** (or
 `relay-d-convert`). Choose the folder, pick a policy, change the main parameters (epochs / steps, batch size,

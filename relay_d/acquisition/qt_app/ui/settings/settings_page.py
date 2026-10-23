@@ -18,13 +18,13 @@ from PyQt5.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QTabWidget,
-    QVBoxLayout,
     QWidget,
 )
 
 from relay_d.utils import user_settings
 from relay_d.utils.coloring_logger import logger
 from ...utils.custom_message_box import CustomMessageBox
+from ..page_style import add_page_header, page_layout
 from ..settings.config_manager import config
 
 
@@ -35,17 +35,14 @@ class SettingsPage:
         self._tab_groups = []
         self._build_ui()
         self.apply_settings_to_ui(config.settings)
+        self._shown = dict(config.settings)  # what the widgets last showed as saved
+        config.settings_changed.connect(self._on_settings_changed)
 
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self):
-        root = QVBoxLayout(self.ui.page_settings)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(12)
-
-        title = QLabel("Settings")
-        title.setObjectName("settingsPageTitle")
-        root.addWidget(title)
+        root = page_layout(self.ui.page_settings)
+        add_page_header(root, "Settings")
 
         self.tabs = QTabWidget()
         for group in user_settings.GROUPS:
@@ -67,7 +64,7 @@ class SettingsPage:
 
         row = QHBoxLayout()
         self.btn_save_settings = QPushButton("Save")
-        self.btn_save_settings.clicked.connect(self.save_settings_from_ui)
+        self.btn_save_settings.clicked.connect(lambda _checked=False: self.save_settings_from_ui())  # clicked passes `checked`, not keys
         self.btn_reset_tab = QPushButton("Reset this tab")
         self.btn_reset_tab.clicked.connect(lambda: self.reset_to_default(self._tab_groups[self.tabs.currentIndex()]))
         self.btn_reset_settings = QPushButton("Reset all")
@@ -130,6 +127,17 @@ class SettingsPage:
     def apply_settings_to_ui(self, values):
         for key, (_w, _get, put) in self.widgets.items():
             put(values.get(key, user_settings.BY_KEY[key].default))
+
+    def _on_settings_changed(self, values):
+        """Another page saved a setting: show it, so the next Save here does not write the old value back.
+        Unsaved edits to other settings stay as they are."""
+        try:
+            for key, (_w, _get, put) in self.widgets.items():
+                if key in values and values[key] != self._shown.get(key):
+                    put(values[key])
+        except RuntimeError:  # the page's widgets were deleted (a window closed)
+            return
+        self._shown = dict(values)
 
     def values_from_ui(self):
         return {key: get() for key, (_w, get, _put) in self.widgets.items()}

@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (pages)
+- **Record page without a config:** opening the Record page (sidebar button, or "Page shown at start") with no config loaded shows "Load a config before recording ..." and opens the Configuration page instead; the empty Record page itself
+  says what to do, and pressing Start without a config now explains why nothing happens (it only logged before).
+- **One look for every page** (`ui/page_style.py` + both themes): the same margins (24/20), a bold page title, a thin separator and the content below, on Record, Review, Train, Settings and Configuration (its title now sits above both tabs);
+  tabs and group boxes are styled the same everywhere (they were unstyled), the Record page uses the same background as the others, and the dark theme's Settings form is readable (its scroll area had a light system background).
+
+### Fixed (TF warning, settings, first start)
+- **`TF_OLD_DATA ignoring data from the past` spam:** the TF listeners (Record page, dispatch `ObsBuilder`, custom TF topics) drop a transform
+  that tf2 would reject anyway (older than the 10 s cache behind the newest of its frame) before tf2 prints a warning, and log one summary
+  line naming the frames. The cause is another publisher on `/tf` with old stamps (a bag replayed without `--remap /tf:=/playback/tf`,
+  a machine with a different clock): `ros2 topic info -v /tf` lists the publishers. rviz2 / robot_state_publisher print their own lines.
+- **Settings apply to what is already running:** `AppAPI` no longer freezes the recordings folder at construction; the recorder re-reads
+  `rec_default_*` at every start; `ConfigManager.get` reads the same store as the command-line tools; the Settings page shows values saved
+  by other pages (Train's Python, Review's last URDF, ...) and no longer writes the old ones back; Review's fixed frame follows its setting
+  unless it was edited.
+- **Environments for training and running policies:** the Train tab builds a separate environment per format (`~/.relayd/envs/lerobot` and `~/.relayd/envs/robomimic`, Python 3.12, uv if available;
+  robomimic from a pinned source commit, since PyPI stops at 0.3.0) and the button just *uses* an environment that is already built (the setup script is safe to re-run: it used to fail on an existing environment and mark
+  it "failed"). The interpreter rule is the same everywhere: the `python_<format>` setting, else the built environment, else the running Python. The Train tab no longer saves its untouched default Python as a setting (that pinned
+  it and hid environments built later). **`lfd-inference-node` and the generated inference script** start again in that environment when the backend's package is missing in the Python that launched them
+  (ROS python packages and Relay-D passed on; guard `RELAYD_REEXEC`).
+- **Robomimic `StopIteration` crash on small datasets:** robomimic only trains on complete batches (`drop_last=True`), so a dataset with fewer training frames than the batch size (default 100) makes no batch and crashes in `run_epoch`.
+  The Train tab now caps a batch size nobody chose to the number of training frames, refuses an explicit one that cannot work with a clear message, and shows "N training frames: M batches per epoch". Also, robomimic catches its own crash
+  and exits 0, so such a run showed as *finished*: a log containing "run failed with error" is now recorded as a failure.
+- **Robomimic training without a validation split** no longer fails (`train.hdf5_validation_filter_key` is cleared when validation is turned off).
+- **Train tab, LeRobot:** "'lerobot' is not installed for <python>" now says what to do, and a new **Set up LeRobot environment** button creates a separate environment
+  (`~/.relayd/envs/lerobot`, with uv if available; `lerobot[training]` + `lerobot[diffusion]`) in a terminal window and uses it for LeRobot training (GUI and `relay-d-train`)
+  unless "Python for LeRobot" is set. Other Python environments are not touched.
+- **Settings Save button** raised `TypeError: 'bool' object is not iterable` (the `clicked` flag was taken as the list of keys to save).
+- **Recordings folder:** the recorder reads the setting when a demo starts and opens a new session folder when it changed (it used a cached copy before).
+- **First start:** if no recordings folder (`hdf5_save_folder`) is set, Relay-D asks for one before anything else can be used (cancelling asks to quit).
+
+### Added (config builder)
+- **Config page > "Build from ROS"**: build `acquisition_config.yaml` from the running ROS 2 graph, GUI only. Pick topics from the live
+  graph (or type one), pick two TF frames, name the inputs, tick message fields to build `output.streams` (joint, quaternion, rpy,
+  arithmetic specs), add cameras / point clouds, choose the action streams (order, delta), fill normalization limits by hand or from
+  the URDF (file or the latched `/robot_description`), set the recording options, review the YAML and the problems, then **Save and use now**.
+  "Edit loaded config" opens an existing file in the builder (unknown keys such as `metadata` are kept).
+- A shared config check (`builder/config_check.py`): undefined inputs in a spec, duplicate `output_map`, limits count vs stream width,
+  `rpy` needing 4 specs, unknown action names, and more. Errors block saving in the builder; loading a file on the Config page shows
+  the same findings as warnings only (existing configs keep loading). The API and `load_offline_config` are unchanged: they still take a ready-made file.
+- `parse_joint_limits` moved to `relay_d/.../config/builder/urdf_limits.py` (stdlib only); `scripts/extract_joint_limits.py` uses it
+  (no more `xmltodict`, but it now needs `relay_d` importable). `run_in_background` moved to `qt_app/utils/background.py`.
+
 ### Fixed (audit)
 - **Dispatch:** a message with a mapped field that cannot be set is no longer published; int/bool fields
   are cast correctly; a command whose send failed is retried; all outputs are computed before any is
