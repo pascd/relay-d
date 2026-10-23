@@ -27,12 +27,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import yaml
 
+from relay_d.utils import user_settings
 from relay_d.utils.coloring_logger import logger
 
 OPTIONS_FILENAME = "postprocess_config.yaml"
 
-DEFAULT_TRAINING_MODEL = "bc_rnn_gmm"
-DEFAULT_SPLITS = {"train_frac": 0.8, "val_frac": 0.2, "test_frac": 0.0}
 
 _warned_legacy: Set[str] = set()
 
@@ -119,15 +118,22 @@ class PostprocessOptions:
         if legacy:
             _warn_legacy("training_model", "robomimic.training_model")
             return str(legacy)
-        logger.info(f"No 'training_model' set; using the default '{DEFAULT_TRAINING_MODEL}'.")
-        return DEFAULT_TRAINING_MODEL
+        default = user_settings.get("postprocess_default_training_model")  # the Settings table owns the default
+        logger.info(f"No 'training_model' set; using the default '{default}'.")
+        return default
+
+    @staticmethod
+    def _default_splits() -> Dict[str, float]:
+        """Defaults from the user settings (train/val; the rest is eval)."""
+        train, val = float(user_settings.get("split_train")), float(user_settings.get("split_val"))
+        return {"train_frac": train, "val_frac": val, "test_frac": round(max(0.0, 1.0 - train - val), 6)}
 
     def splits(self, acq_config: Optional[Dict] = None) -> Dict[str, float]:
         """train/val/test fractions for the robomimic ``mask`` group."""
-        out = dict(DEFAULT_SPLITS)
+        out = self._default_splits()
         file_splits = self._section("robomimic").get("splits")
         file_splits = file_splits if isinstance(file_splits, dict) else {}
-        for key in DEFAULT_SPLITS:
+        for key in list(out):
             if key in file_splits:
                 out[key] = file_splits[key]
             elif acq_config and key in acq_config:

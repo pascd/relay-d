@@ -1,10 +1,11 @@
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from rclpy.duration import Duration as rclpy_duration
 import rclpy.time
 
 from relay_d.utils.coloring_logger import logger
+from relay_d.utils import user_settings
+from relay_d.utils.qos import subscription_qos
 from relay_d.utils.tf_topic import (
     TfTopicSubscriptionError,
     get_or_create_tf_buffer,
@@ -16,9 +17,8 @@ import importlib
 import time
 
 from sensor_msgs.msg import Image, PointCloud2, JointState, CompressedImage
-from geometry_msgs.msg import Twist, PoseStamped, TransformStamped
-from std_msgs.msg import String, Float32, Float64, Int32, Bool
-from tf2_msgs.msg import TFMessage
+from geometry_msgs.msg import Twist, PoseStamped
+from std_msgs.msg import Bool
 
 try:
     from tf2_ros import TransformListener, Buffer
@@ -29,6 +29,15 @@ except ImportError:
 
 
 class TopicSubscribers(Node):
+    # Timeouts come from the user settings, read when used so a change applies to the next subscription.
+    @property
+    def _CUSTOM_TF_WAIT_TIMEOUT(self):
+        return float(user_settings.get("tf_wait_timeout_s"))
+
+    @property
+    def _TOPIC_DISCOVERY_TIMEOUT(self):
+        return float(user_settings.get("topic_discovery_timeout_s"))
+
     def __init__(self):
         super().__init__("topic_subscribers")
         self.subscribers = {}
@@ -57,11 +66,9 @@ class TopicSubscribers(Node):
         # the requested transform before _create_tf_lookup treats it as
         # failed (TfTopicSubscriptionError) instead of proceeding silently.
         # Overridable per-input via the YAML `tf_wait_timeout` key.
-        self._CUSTOM_TF_WAIT_TIMEOUT = 10.0
         # How long _detect_topic_type polls the ROS graph for a topic before
         # giving up. 5s tolerates typical discovery latency right after node
         # startup without leaving the user waiting too long on a real miss.
-        self._TOPIC_DISCOVERY_TIMEOUT = 5.0
         self._TOPIC_DISCOVERY_POLL = 0.3
 
         try:
@@ -171,7 +178,7 @@ class TopicSubscribers(Node):
             logger.info(f"Creating subscription: {topic_path} -> {msg_class.__name__}")
 
             callback = self._create_callback(container_id, input_name)
-            qos = QoSProfile(depth=10, reliability=QoSReliabilityPolicy.RELIABLE)
+            qos = subscription_qos(self, topic_path)
             subscriber = self.create_subscription(
                 msg_class, topic_path, callback, qos_profile=qos
             )
@@ -653,19 +660,6 @@ class TopicSubscribers(Node):
         except Exception:
             return None
 
-    def debug_subscribers(self):
-        try:
-            logger.info(f"Subscribers: {len(self.subscribers)}")
-            for container_id, status in self.subscriber_status.items():
-                logger.info(
-                    f"  {container_id}: {status.get('topic', 'unknown')} | "
-                    f"Status: {status.get('status')} | "
-                    f"Messages: {status.get('message_count', 0)} | "
-                    f"Data: {self.has_data(container_id)}"
-                )
-        except Exception as e:
-            logger.error(f"Debug error: {e}")
-
     def get_content(self, container_id=None):
         try:
             with self.data_lock:
@@ -696,12 +690,6 @@ class TopicSubscribers(Node):
                 self.latest_data[k] = None
             self.latest_timestamps.clear()
         logger.info("Flushed latest_data and timestamps before recording start")
-
-    def get_container_data(self, container):
-        container_id = getattr(container, "container_id", None)
-        if container_id:
-            return self.get_content(container_id)
-        return None
 
     def get_message_count(self, container_id):
         return self.subscriber_status.get(container_id, {}).get("message_count", 0)

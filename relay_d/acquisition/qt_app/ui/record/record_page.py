@@ -61,18 +61,9 @@ class RecordPage:
 
     def _on_settings_changed(self, settings):
         """Handle settings changes via signal"""
-        if "recording_frequency" in settings:
-            freq = settings["recording_frequency"]
-            if freq and freq > 0:
-                self.data_recorder.recording_frequency = freq
-                logger.info(f"Recording frequency updated to {freq} Hz")
-
         if "hdf5_save_folder" in settings:
-            self.data_recorder.output_directory = settings["hdf5_save_folder"]
+            self.data_recorder.set_output_directory(settings["hdf5_save_folder"])
             logger.info(f"HDF5 save folder updated to: {settings['hdf5_save_folder']}")
-
-        if "enable_compression" in settings:
-            logger.info(f"Compression set to {settings['enable_compression']}")
 
         if "freeze_containers" in settings:
             logger.info(f"Freeze containers set to {settings['freeze_containers']}")
@@ -135,8 +126,6 @@ class RecordPage:
 
         logger.info(f"Total gripper mappings: {len(self.gripper_key_map)}")
 
-        # Update status
-        self.update_config_status(f"Config loaded: {file_path}")
 
     def _on_config_cleared(self):
         """Handle config cleared signal"""
@@ -158,18 +147,10 @@ class RecordPage:
 
         self.recording.set_config_loaded(False)
 
-        # Update status
-        self.update_config_status("No config loaded")
 
     def _create_containers(self):
         """Create containers based on YAML configuration data"""
         return self.container_manager.create_containers()
-
-    def update_config_status(self, status_text):
-        """Update UI to reflect config status"""
-        # Assuming you have a status label
-        if hasattr(self, "config_status_label"):
-            self.config_status_label.setText(status_text)
 
     # ------------------------------------------------------------------
     # Recording lifecycle (implemented by RecordingController)
@@ -211,25 +192,9 @@ class RecordPage:
     def last_validation_result(self):
         return self.recording.last_validation_result
 
-    def get_container_data(self, input_name):
-        """Get the latest ROS data for a container by input name"""
-        return self.container_manager.get_container_data(input_name)
-
-    def get_container_by_input_name(self, input_name):
-        """Get container by input name"""
-        return self.container_manager.get_container_by_input_name(input_name)
-
-    def get_all_container_info(self):
-        """Get information about all containers"""
-        return self.container_manager.get_all_container_info()
-
     def restart_failed_subscribers(self):
         """Restart subscribers that failed to create or stopped working"""
         return self.container_manager.restart_failed_subscribers()
-
-    def update_container_statuses(self):
-        """Update all container statuses based on current subscriber state"""
-        self.container_manager.update_container_statuses()
 
     def force_ui_refresh(self):
         """Force UI refresh"""
@@ -243,21 +208,13 @@ class RecordPage:
         """Setup all button connections"""
         try:
             # Container management
-            if hasattr(self.ui, "btn_refresh_containers"):
-                self.ui.btn_refresh_containers.clicked.connect(self._create_containers)
-
             if hasattr(self.ui, "btn_restart_subscribers"):
                 self.ui.btn_restart_subscribers.clicked.connect(
                     self.restart_failed_subscribers
-                )
-
-            if hasattr(self.ui, "btn_update_status"):
-                self.ui.btn_update_status.clicked.connect(
-                    self.update_container_statuses
                 )
 
             # Start / Pause(Resume) / Stop: each connected once by the controller
             self.recording.connect_buttons()
 
         except Exception as e:
-            logger.error("Error setting up connections.")
+            logger.error(f"Error setting up connections: {e}")

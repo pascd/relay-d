@@ -1,13 +1,12 @@
 
 # Import utils
 from .yaml_parser import YamlParser
-from ..settings.config_manager import config
 from relay_d.utils.coloring_logger import logger
 from ...utils.custom_message_box import CustomMessageBox
 from ...utils.stream_builder import StreamBuilder
 from ...utils.default_configs import generate_default_configs
+from ..settings.config_manager import config
 
-from PyQt5.QtCore import Qt
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtWidgets import QFileDialog
 
@@ -31,18 +30,6 @@ class ConfigPage:
         # Setup all button connections
         self._setup_connections()
 
-        # Connect to config changes
-        config.settings_changed.connect(self._on_settings_loaded)
-
-    def _on_settings_loaded(self, settings):
-        """Handle settings changes via signal"""
-        # Config page doesn't need to react to many settings
-        # but we could refresh config preview or other things here
-
-        if "hdf5_load_folder" in settings:
-            self.load_folder = settings["hdf5_load_folder"]
-            if self.load_folder and hasattr(self.ui, "lineEdit_hdf5_load_folder"):
-                self.ui.lineEdit_hdf5_load_folder.setText(self.load_folder)
 
     ## Connect all the buttons related with config page
     def _setup_connections(self):
@@ -257,10 +244,6 @@ class ConfigPage:
 
     def show_config_preview(self):
 
-        # First retrieve answer from yaml
-        yaml_str = self.yaml_parser.get_raw_yaml()
-
-        # Append the message
         if hasattr(self.ui, "txt_config_display"):
             self.clear_config_preview()
 

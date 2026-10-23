@@ -1,7 +1,4 @@
-import sys
 import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import rclpy
 from threading import Thread, current_thread
@@ -14,6 +11,7 @@ from ..qt_app.ui.postprocess.yaml_driven_converter import YAMLDrivenConverter
 from ..qt_app.ui.postprocess.postprocess_config_loader import PostprocessConfigLoader
 from ..qt_app.ui.postprocess.postprocess_options import PostprocessOptions
 from ..qt_app.ui.review.demo_validator import DemoValidator
+from relay_d.utils import user_settings
 from relay_d.utils.coloring_logger import logger
 
 class ContainerAdapter:
@@ -58,7 +56,7 @@ class AppAPI:
                 logger.error(f"Ignoring postprocess options {options_path}: {'; '.join(problems)}")
 
         if output_dir is None:
-            output_dir = os.path.join(os.path.expanduser("~"), "lfd_recordings")
+            output_dir = user_settings.get("hdf5_save_folder") or os.path.join(os.path.expanduser("~"), "lfd_recordings")
 
         # Pass the output directory to the DataRecorder instance
         self._base_output_dir = output_dir
@@ -123,6 +121,7 @@ class AppAPI:
         return {
             "is_recording": self._data_recorder.is_recording,
             "is_paused": self._data_recorder.is_paused,
+            "buffer_full": self._data_recorder.buffer_full,
             "file_path": self._data_recorder.h5_file_path,
             "samples": len(self._data_recorder.timestamps),
         }

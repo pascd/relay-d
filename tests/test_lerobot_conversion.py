@@ -16,39 +16,7 @@ from relay_d.acquisition.qt_app.ui.postprocess.yaml_driven_converter import (  #
     YAMLDrivenConverter,
 )
 
-FPS = 10
-LENGTHS = [14, 9]
-
-DATA_CONFIG = {
-    "dataset_name": "stack_cubes",
-    "recording_frequency": FPS,
-    "actions_to_extract": ["robot_joint_pos"],
-    "input": {"camera_rgb": {"topic": "/cam", "modality": "rgb"}},
-    "output": {
-        "agentview_image": "camera_rgb/images",
-        "streams": {
-            "robot_joint_pos": ["joint_1.position[:]"],
-            "eef_translation": [
-                "tf_eef.translation.x",
-                "tf_eef.translation.y",
-                "tf_eef.translation.z",
-            ],
-        },
-    },
-}
-
-
-def _write_recording(path, lengths, seed=0):
-    rng = np.random.default_rng(seed)
-    with h5py.File(path, "w") as f:
-        data = f.create_group("data")
-        for i, n in enumerate(lengths):
-            demo = data.create_group(f"demo_{i}")
-            streams = demo.create_group("streams")
-            streams.create_dataset("robot_joint_pos", data=rng.normal(size=(n, 4)).astype(np.float32))
-            streams.create_dataset("eef_translation", data=rng.normal(size=(n, 3)).astype(np.float32))
-            cam = demo.create_group("camera_rgb")
-            cam.create_dataset("images", data=rng.integers(0, 255, (n, 24, 32, 3), dtype=np.uint8))
+from helpers import DATA_CONFIG, FPS, LENGTHS, write_recording  # noqa: E402
 
 
 @pytest.fixture
@@ -60,7 +28,7 @@ def converter():
 
 def test_convert_to_lerobot(tmp_path, converter):
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, LENGTHS)
+    write_recording(rec, LENGTHS)
     out = tmp_path / "lerobot_dataset"
 
     assert converter.convert_multiple_files("lerobot", [str(rec)], str(out))
@@ -93,7 +61,7 @@ def test_convert_to_lerobot(tmp_path, converter):
 
 def test_config_overrides(tmp_path, converter):
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, [6])
+    write_recording(rec, [6])
     converter.data_config["lerobot"] = {"task": "pick up the red cube", "state_streams": ["eef_translation"]}
     out = tmp_path / "ds"
     assert converter.convert_multiple_files("lerobot", [str(rec)], str(out))
@@ -104,7 +72,7 @@ def test_config_overrides(tmp_path, converter):
 
 def test_missing_recording_frequency_fails(tmp_path, converter):
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, [6])
+    write_recording(rec, [6])
     del converter.data_config["recording_frequency"]
     assert not converter.convert_multiple_files("lerobot", [str(rec)], str(tmp_path / "ds"))
 
@@ -112,7 +80,7 @@ def test_missing_recording_frequency_fails(tmp_path, converter):
 def test_robomimic_path_still_works(tmp_path, converter):
     """The shared batch preparation must not change the robomimic output."""
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, LENGTHS)
+    write_recording(rec, LENGTHS)
     out = tmp_path / "robomimic.h5"
     assert converter.convert_multiple_files("robomimic", [str(rec)], str(out))
     with h5py.File(out, "r") as f:
@@ -126,7 +94,7 @@ def test_missing_pyav_fails_fast_with_clear_message(tmp_path, converter, monkeyp
     import sys
 
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, LENGTHS)
+    write_recording(rec, LENGTHS)
     out = tmp_path / "ds"
     monkeypatch.setitem(sys.modules, "av", None)  # makes `import av` raise ImportError
     assert not converter.convert_multiple_files("lerobot", [str(rec)], str(out))
@@ -137,7 +105,7 @@ def test_missing_pyav_fails_fast_with_clear_message(tmp_path, converter, monkeyp
 
 def test_last_error_cleared_on_success(tmp_path, converter):
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, [5])
+    write_recording(rec, [5])
     converter.last_error = "stale"
     assert converter.convert_multiple_files("lerobot", [str(rec)], str(tmp_path / "ds"))
     assert converter.last_error is None
@@ -145,7 +113,7 @@ def test_last_error_cleared_on_success(tmp_path, converter):
 
 def test_missing_fps_sets_reason(tmp_path, converter):
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, [5])
+    write_recording(rec, [5])
     del converter.data_config["recording_frequency"]
     assert not converter.convert_multiple_files("lerobot", [str(rec)], str(tmp_path / "ds"))
     assert "recording_frequency" in converter.last_error
@@ -193,7 +161,7 @@ def test_missing_pyarrow_fails_clearly_without_output(tmp_path, converter, monke
     import sys
 
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, [5])
+    write_recording(rec, [5])
     out = tmp_path / "ds"
     monkeypatch.setitem(sys.modules, "pyarrow", None)
     assert not converter.convert_multiple_files("lerobot", [str(rec)], str(out))

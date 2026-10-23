@@ -58,11 +58,9 @@ See [Architecture diagrams](#6-architecture-diagrams) for how these pieces fit t
 |---|---|
 | `robomimic` (`>=0.4`) | imitation-learning policy backend. **Must** be installed from an [ARISE-Initiative](https://github.com/ARISE-Initiative/robomimic) source checkout, not plain PyPI (see [Installation](#4-installation)) |
 
-**Optional extra** — `pip install ".[dispatch]"` (needed for `lfd-inference-node` / `InferenceSession`):
-
-| Package | Used for |
-|---|---|
-| `torch` | policy model loading/inference |
+**For `lfd-inference-node` / `InferenceSession`** there is no extra: policies run with the package that trained them, installed
+in the Python that runs the node: `robomimic` (above) for `.pth` checkpoints, or `lerobot` (`pip install 'lerobot[training]'`,
+plus `'lerobot[diffusion]'` for Diffusion) for LeRobot checkpoints. See "Running inference on the robot".
 
 **Optional extra** — `pip install ".[scripts]"`: `xmltodict`, used by `scripts/extract_joint_limits.py` to parse URDF XML.
 
@@ -114,9 +112,9 @@ git clone git@github.com:pascd/Relay-D.git
 cd Relay-D
 
 # 3. Install
-pip install -e ".[dispatch]"   # drop [dispatch] if you only record/convert (no torch)
+pip install -e .
 
-# Optional: robomimic backend for policy inference.
+# Optional: robomimic, to run robomimic policies (`lfd-inference-node --backend robomimic`).
 # IMPORTANT: PyPI's `robomimic` package only goes up to 0.3.0 and is NOT
 # compatible with checkpoints trained from a newer ARISE-Initiative source
 # checkout (this dispatcher targets >=0.4, e.g. 0.5.0). Install your
@@ -165,15 +163,69 @@ Format options (robomimic env metadata and training model, LeRobot task, ...) ar
 
 ### Running inference on the robot
 
+Two policy backends, picked from the checkpoint (`--backend auto`, the default) or set with `--backend robomimic|lerobot`:
+
 ```bash
-lfd-inference-node \
-    --checkpoint path/to/model.pth \
-    --obs-config path/to/obs_config.yaml \
-    --action-config path/to/action_config.yaml \
-    --device cpu
+# robomimic: a .pth checkpoint, run with robomimic's own RolloutPolicy
+lfd-inference-node --checkpoint path/to/model.pth \
+    --obs-config path/to/obs_config.yaml --action-config path/to/action_config.yaml --device cpu
+
+# LeRobot: the pretrained_model folder of a checkpoint (ACT, Diffusion, ...), run with LeRobot
+lfd-inference-node --checkpoint path/to/run/output/checkpoints/last/pretrained_model \
+    --obs-config path/to/obs_config.yaml --action-config path/to/action_config.yaml --device cpu
 ```
 
+Data Post Process writes `action_dispatcher/` next to every dataset (robomimic or LeRobot): `obs_config.yaml` made from your acquisition
+config, an `action_config.yaml` template to adapt, and an `inference_script.py`.
+
+For LeRobot the node feeds the policy what the dataset had: the vector observations side by side as `observation.state` (in the order of
+the dataset's `meta/info.json`, found through the checkpoint's `train_config.json`; `--state-keys a,b` overrides it) and each camera as
+`observation.images.<name>` (BGR to RGB, scaled to [0, 1]). LeRobot normalizes with the statistics saved in the checkpoint. The Python that
+runs the node needs `lerobot`; LeRobot 0.6 needs torch < 2.12, so it usually lives in its own virtual environment with ROS 2 sourced.
+
 See `relay_d/dispatch/inference_node.py` and `relay_d/dispatch/config_templates/*.yaml` for the full set of options and config syntax.
+
+### Training a policy (Train tab or `relay-d-train`)
+
+The **Train** tab starts robomimic or LeRobot training on a dataset made by **Data Post Process** (or
+`relay-d-convert`). Choose the folder, pick a policy, change the main parameters (epochs / steps, batch size,
+learning rate, ...) and press **Start Training**. It opens a terminal window; training keeps running if you
+close Relay-D, and the table in the tab follows the runs (status, stop, follow the log). Each run has its own
+folder `training_runs/<format>_<time>/` next to the dataset (command, config, `train.log`).
+
+```bash
+relay-d-train --folder ~/lfd_recordings/2026-10-23_10-00-00 --epochs 200                    # robomimic
+relay-d-train --folder <folder> --format lerobot --policy act --steps 50000 \
+              --python ~/venvs/lerobot/bin/python --extra=--log_freq=50                       # LeRobot
+relay-d-train --folder <folder> --dry-run      # print the command only
+relay-d-train --folder <folder> --list         # runs of this folder (also --stop <run>)
+```
+
+Training runs with the Python you choose per format (default: the one running Relay-D), which must have
+`robomimic` (>=0.4, from source, see Installation) or `lerobot` installed. Use "Check environment" in the tab
+to test it. LeRobot pins its own torch range (0.6.x needs torch below 2.12), so it usually belongs in its own virtual
+environment: `pip install 'lerobot[training]'` (plus `'lerobot[diffusion]'` for Diffusion). ACT and Diffusion also
+need at least one camera in the dataset. Policies: robomimic `bc_rnn_gmm`,
+`bc_transformer_gmm`, `diffusion_policy`; LeRobot `act`, `diffusion`. Anything else goes in "Extra arguments".
+Without a display (SSH) the run starts in the background and logs to `train.log`.
+
+### Settings
+
+The **Settings** tab (tabs: General, Recording, Review, Post-process, Training, Inference) edits
+`~/.relayd_settings.json`. The same file is read by the command-line tools, so a value saved there is the
+default of `relay-d-train`, `relay-d-convert` (video quality, file sizes, splits), `lfd-inference-node`
+(`--device`, `--hz`, `--max-obs-age`, `--obs-wait`, `--backend`) and the headless `AppAPI`. Precedence is
+**acquisition YAML > setting > built-in default**, and a command-line flag beats all of them. Settings marked
+"(restart)" apply the next time Relay-D starts; the others apply immediately. The list of settings, with their
+defaults and tooltips, is the table `SETTINGS` in `relay_d/utils/user_settings.py`; `RELAYD_SETTINGS_FILE`
+points the tools at another file, and `RELAYD_LOG_LEVEL` overrides the log-level setting.
+
+### Reviewing a LeRobot dataset
+
+The **Review** tab also opens LeRobot v3.0 datasets (needs `pyarrow`, from `pip install ".[lerobot]"`): choose the
+Post-process output folder or the dataset folder. You get the episode list with checks (frame counts, ordering,
+NaN, missing videos), a camera selector with a frame slider, and the `observation.state` / `action` curves
+(joint names from `info.json`, time axis in seconds). It is view-only: no delete and no rviz playback.
 
 ### Package layout
 
@@ -181,10 +233,10 @@ See `relay_d/dispatch/inference_node.py` and `relay_d/dispatch/config_templates/
 relay_d/
 ├── utils/              # shared utilities (colored logger, config loader, TF-topic and ROS media helpers)
 ├── dispatch/           # policy inference + action dispatch (lfd-inference-node)
+├── training/           # start/follow robomimic and LeRobot training runs (relay-d-train, Train tab)
 └── acquisition/        # RelayDApp GUI + AppAPI (data recording + Robomimic/LeRobot conversion)
     └── qt_app/ui/config/templates/   # default acquisition + post-process config templates
 scripts/                # standalone CLIs (convert_dataset.py, extract_joint_limits.py, reprocess_recorded_data.py)
-debug/                  # standalone offline dev/parity-testing tools, not part of the installed package
 ```
 
 ---
@@ -200,7 +252,7 @@ The full pipeline — from YAML config, through recording and conversion, to tra
 ## 7. Known issues
 
 - **No automated test suite for ROS 2-dependent code paths.** CI builds the package and runs the ROS-free pytest suite (config parsing, dataset conversion); changes touching `rclpy`/`tf2_ros` code paths must currently be validated manually (e.g. running `RelayDApp`, recording a demo, converting it). See [CONTRIBUTING.md](CONTRIBUTING.md).
-- **Checkpoints run code when loaded.** Robomimic `.pth` checkpoints are Python pickles, so loading one executes whatever is inside. Only load checkpoints you trained or trust. TorchScript (`.pt`) files do not have this problem.
+- **Checkpoints run code when loaded.** Robomimic `.pth` checkpoints are Python pickles, so loading one executes whatever is inside. Only load checkpoints you trained or trust. LeRobot checkpoints (safetensors) do not have this problem.
 - **`robomimic` version mismatch on PyPI.** The published `robomimic` package on PyPI only goes up to `0.3.0`, which is **not** compatible with checkpoints trained against a newer [ARISE-Initiative](https://github.com/ARISE-Initiative/robomimic) source checkout (this project targets `>=0.4`). You must install your own `robomimic` source checkout in editable mode before installing the `[robomimic]` extra — see [Installation](#4-installation).
 
 ---

@@ -131,7 +131,7 @@ def test_start_failure_shows_error_and_keeps_state(env):
     assert env.ctrl.start_recording() is False
     assert not env.ctrl.is_recording
     env.box.error.assert_called_once()
-    assert env.box.error.call_args[0][0] == "Recording Error"
+    assert env.box.error.call_args[1]["title"] == "Recording Error"
 
 
 def test_tf_topic_error_is_reported_and_blocks_recording(env):
@@ -139,8 +139,8 @@ def test_tf_topic_error_is_reported_and_blocks_recording(env):
     assert env.ctrl.start_recording() is False
     assert not env.ctrl.is_recording
     env.recorder.start_recording.assert_not_called()
-    assert env.box.error.call_args[0][0] == "TF Topic Error"
-    assert "/bad/tf" in env.box.error.call_args[0][1]
+    assert env.box.error.call_args[1]["title"] == "TF Topic Error"
+    assert "/bad/tf" in env.box.error.call_args[0][0]
 
 
 def test_failed_validation_warns_and_validator_errors_do_not_break_stop(env):

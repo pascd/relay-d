@@ -13,7 +13,6 @@ import threading
 import time
 
 import numpy as np
-import rclpy
 import subprocess
 import shlex
 
@@ -93,9 +92,18 @@ def _set_nested(obj: Any, path: str, value: float) -> None:
         target = getattr(obj, last_name)
         for idx in last_indices[:-1]:
             target = target[idx]
-        target[last_indices[-1]] = float(value)
+        target[last_indices[-1]] = _coerce(target[last_indices[-1]], value)
     else:
-        setattr(obj, last_name, float(value))
+        setattr(obj, last_name, _coerce(getattr(obj, last_name), value))
+
+
+def _coerce(current: Any, value: float) -> Any:
+    """Cast a model output to the type of the field it overwrites (rclpy rejects a float for an int/bool field)."""
+    if isinstance(current, bool):
+        return bool(value)
+    if isinstance(current, int):
+        return int(round(float(value)))
+    return float(value)
 
 
 def _set_nested_array(obj: Any, path: str, values) -> None:
@@ -156,14 +164,19 @@ def _check_success(msg: Any, fb_cfg: dict, default_field: str = "reached") -> bo
         return False
 
 
-def _fill_msg(msg: Any, cfg: dict, slice_values: np.ndarray, node: Node) -> None:
-    """Fill header (if present) and mapped fields into a ROS message."""
+def _fill_msg(msg: Any, cfg: dict, slice_values: np.ndarray, node: Node) -> bool:
+    """Fill header (if present) and mapped fields into a ROS message.
+
+    Returns False if any mapped field could not be set: the message would carry default
+    values (zero velocity, zero quaternion) and must not be sent to the robot.
+    """
     if hasattr(msg, "header"):
         msg.header = Header()
         msg.header.stamp = node.get_clock().now().to_msg()
         if "frame_id" in cfg:
             msg.header.frame_id = cfg["frame_id"]
 
+    ok = True
     for field_path, slice_idx in cfg["mapping"].items():
         try:
             if isinstance(slice_idx, list):
@@ -171,9 +184,11 @@ def _fill_msg(msg: Any, cfg: dict, slice_values: np.ndarray, node: Node) -> None
             else:
                 _set_nested(msg, field_path, slice_values[slice_idx])
         except Exception as e:
+            ok = False
             logger.warning(
                 f"[ActionDispatcher] Failed to set {field_path}: {e}"
             )
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +214,6 @@ class ActionDispatcher:
         self._ack_latest: Dict[str, Any] = {}
         self._ack_events: Dict[str, threading.Event] = {}
 
-        # __init__: change if -> elif
         for name, cfg in self._action_configs.items():
             is_action = cfg.get("action", False)
             is_command = "command" in cfg
@@ -209,7 +223,7 @@ class ActionDispatcher:
                     f"[ActionDispatcher] '{name}' -> COMMAND '{cfg['command'][:50]}...'"
                 )
 
-            elif is_action:                          # <-- elif, not if
+            elif is_action:
                 if "action_type" not in cfg:
                     raise ValueError(
                         f"[ActionDispatcher] '{name}' has action: true "
@@ -282,8 +296,11 @@ class ActionDispatcher:
         if not np.isfinite(action).all():
             logger.error(f"[ActionDispatcher] Non-finite action, not dispatching: {action}")
             return
-        for name, cfg in self._action_configs.items():
 
+        # Phase 1: compute every output. If one config entry is broken (bad slice, unknown transform)
+        # this raises before anything was sent, instead of moving the arm and skipping the gripper.
+        outputs = []
+        for name, cfg in self._action_configs.items():
             slice_values = action[cfg["indices"]]
 
             # 1. Per-index denormalization: model output range -> real-world range
@@ -299,7 +316,10 @@ class ActionDispatcher:
                 transformed = self._apply_transform(slice_values, cfg["transform"])
             else:
                 transformed = slice_values
+            outputs.append((name, cfg, transformed))
 
+        # Phase 2: send.
+        for name, cfg, transformed in outputs:
             # Command template path — simplest, just shell out
             if "command" in cfg:
                 cmd = self._render_command(cfg["command"], transformed)
@@ -308,16 +328,17 @@ class ActionDispatcher:
                 proc = self._procs.get(name)
                 if proc is not None and proc.poll() is None:
                     continue  # previous command still running: retry next tick, don't pile up
-                self._last_sent[name] = cmd
-                self._dispatch_command(name, cfg, cmd)
+                # Remember it only once it was started, so a failed start is retried.
+                if self._dispatch_command(name, cfg, cmd):
+                    self._last_sent[name] = cmd
 
             # ROS2 action client path
             elif cfg.get("action", False):
                 key = str(transformed)
                 if self._last_sent.get(name) == key:
                     continue
-                self._last_sent[name] = key
-                self._dispatch_action(name, cfg, transformed)
+                if self._dispatch_action(name, cfg, transformed):
+                    self._last_sent[name] = key
 
             # Publisher path: sent every tick (controllers with a watchdog need a stream);
             # set `dedupe: true` on the entry to skip repeats.
@@ -325,8 +346,14 @@ class ActionDispatcher:
                 key = str(transformed)
                 if cfg.get("dedupe", False) and self._last_sent.get(name) == key:
                     continue
-                self._last_sent[name] = key
-                self._dispatch_topic(name, cfg, transformed)
+                if self._dispatch_topic(name, cfg, transformed):
+                    self._last_sent[name] = key
+
+    def close(self) -> None:
+        """Stop the shell commands this dispatcher started and is still running."""
+        for proc in self._procs.values():
+            if proc.poll() is None:
+                proc.terminate()
 
     # -------------------------------------------------------------------------
     # Private
@@ -334,7 +361,7 @@ class ActionDispatcher:
 
     def _dispatch_command(
         self, name: str, cfg: dict, cmd: str
-    ) -> None:
+    ) -> bool:
         logger.debug(
             f"[ActionDispatcher] Running command for '{name}':\n  {cmd}"
         )
@@ -344,16 +371,20 @@ class ActionDispatcher:
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            return True
         except Exception as e:
             logger.warning(
                 f"[ActionDispatcher] Command failed for '{name}': {e}\n  cmd: {cmd}"
             )
+            return False
 
-    def _dispatch_topic(self, name: str, cfg: dict, slice_values: np.ndarray) -> None:
+    def _dispatch_topic(self, name: str, cfg: dict, slice_values: np.ndarray) -> bool:
         msg = self._msg_classes[name]()
         if "goal_init" in cfg:
             self._init_goal(msg, cfg["goal_init"], name)
-        _fill_msg(msg, cfg, slice_values, self._node)
+        if not _fill_msg(msg, cfg, slice_values, self._node):
+            logger.error(f"[ActionDispatcher] '{name}' not published: a mapped field could not be set.")
+            return False
         logger.debug(
             f"[ActionDispatcher] Publishing '{name}' -> {cfg['topic']}:\n  {msg}"
         )
@@ -361,6 +392,7 @@ class ActionDispatcher:
 
         if "feedback" in cfg:
             self._wait_for_ack(name, cfg["feedback"], msg.header.stamp)
+        return True
 
     def _on_ack(self, msg: Any, name: str) -> None:
         self._ack_latest[name] = msg
@@ -426,14 +458,14 @@ class ActionDispatcher:
             raise RuntimeError(msg)
         logger.warning(msg + "; proceeding anyway.")
 
-    def _dispatch_action(self, name: str, cfg: dict, slice_values: np.ndarray) -> None:
+    def _dispatch_action(self, name: str, cfg: dict, slice_values: np.ndarray) -> bool:
         client = self._action_clients[name]
 
         if not client.server_is_ready():
             logger.warning(
                 f"[ActionDispatcher] Action server '{cfg['topic']}' not ready, skipping."
             )
-            return
+            return False
 
         goal = self._goal_classes[name]()
 
@@ -442,7 +474,9 @@ class ActionDispatcher:
             self._init_goal(goal, cfg["goal_init"], name)
 
         # 2. Fill model output values into mapped fields
-        _fill_msg(goal, cfg, slice_values, self._node)
+        if not _fill_msg(goal, cfg, slice_values, self._node):
+            logger.error(f"[ActionDispatcher] '{name}' goal not sent: a mapped field could not be set.")
+            return False
 
         logger.debug(
             f"[ActionDispatcher] Sending goal for '{name}':\n{goal}"
@@ -454,9 +488,10 @@ class ActionDispatcher:
             future.add_done_callback(
                 lambda f, n=name: self._goal_response_callback(f, n)
             )
-            return
+            return True
 
         self._dispatch_action_and_wait(name, client, goal, fb_cfg)
+        return True
 
     def _dispatch_action_and_wait(
         self, name: str, client: ActionClient, goal: Any, fb_cfg: dict
@@ -597,15 +632,10 @@ class ActionDispatcher:
         values can be np.ndarray or dict.
         """
         result = template
-        if isinstance(values, dict):
-            for idx, val in values.items():
-                # Format ints as ints, floats as floats
-                formatted = str(int(val)) if float(val).is_integer() else str(round(float(val), 6))
-                result = result.replace(f"{{I[{idx}]}}", formatted)
-        else:
-            for idx, val in enumerate(values):
-                formatted = str(int(val)) if float(val).is_integer() else str(round(float(val), 6))
-                result = result.replace(f"{{I[{idx}]}}", formatted)
+        for idx, val in (values.items() if isinstance(values, dict) else enumerate(values)):
+            # Format ints as ints, floats as floats
+            formatted = str(int(val)) if float(val).is_integer() else str(round(float(val), 6))
+            result = result.replace(f"{{I[{idx}]}}", formatted)
 
         if re.search(r'\{I\[\d+\]\}', result):
             logger.warning(

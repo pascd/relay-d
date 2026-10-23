@@ -26,7 +26,6 @@ dependencies = [
     "opencv-python-headless>=4.8.0,<4.13",
     "pyqt5>=5.15.11",
     "pyqtgraph>=0.13.7",
-    "scipy>=1.10.0",
 ]
 # rclpy, tf2_ros, ROS2 message packages (std_msgs, geometry_msgs,
 # sensor_msgs, tf2_msgs) are intentionally NOT declared here:
@@ -46,12 +45,9 @@ Changelog = "https://github.com/pascd/Relay-D/blob/main/CHANGELOG.md"
 # dispatcher targets >=0.4, e.g. 0.5.0). Install your robomimic source
 # checkout in editable mode BEFORE installing this extra — see README.md.
 robomimic = ["robomimic>=0.4"]
-# LeRobotDataset v3.0 output (parquet + mp4); see postprocess/lerobot_writer.py.
-# Only needed to convert recordings to the LeRobot format.
-# Policy inference (`lfd-inference-node`, `InferenceSession`); not needed to record or convert.
-dispatch = ["torch>=2.10.0"]
 # Only for scripts/extract_joint_limits.py.
 scripts = ["xmltodict"]
+# LeRobotDataset v3.0: convert to it (postprocess/lerobot_writer.py) and open it in the Review tab.
 lerobot = ["pyarrow>=15.0", "av>=12.0"]
 
 [dependency-groups]
@@ -63,6 +59,7 @@ dev = [
 lfd-inference-node = "relay_d.dispatch.inference_node:main"
 RelayDApp = "relay_d.acquisition.qt_app.app:main"
 relay-d-convert = "relay_d.acquisition.convert_cli:main"
+relay-d-train = "relay_d.training.train_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

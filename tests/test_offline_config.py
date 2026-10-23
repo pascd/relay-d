@@ -10,7 +10,7 @@ from relay_d.acquisition.qt_app.ui.postprocess.postprocess_config_loader import 
 from relay_d.acquisition.qt_app.ui.postprocess.yaml_driven_converter import YAMLDrivenConverter
 
 pytest.importorskip("av")
-from test_lerobot_conversion import DATA_CONFIG, LENGTHS, _write_recording  # noqa: E402
+from helpers import DATA_CONFIG, LENGTHS, write_recording  # noqa: E402
 
 
 def _write_cfg(path, config):
@@ -49,7 +49,7 @@ def test_malformed_stream_spec_is_rejected(tmp_path):
 
 def test_offline_config_drives_lerobot_conversion(tmp_path):
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, LENGTHS)
+    write_recording(rec, LENGTHS)
     parser, _ = load_offline_config(_write_cfg(tmp_path / "c.yaml", DATA_CONFIG))
     converter = YAMLDrivenConverter(PostprocessConfigLoader(), data_config=parser.yaml_data["config"])
     out = tmp_path / "ds"

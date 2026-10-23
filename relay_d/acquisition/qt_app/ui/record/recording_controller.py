@@ -1,5 +1,7 @@
 import time
 
+from PyQt5.QtCore import QTimer
+
 from relay_d.utils.coloring_logger import logger
 from relay_d.utils.tf_topic import TfTopicSubscriptionError
 
@@ -44,34 +46,43 @@ class RecordingController:
         self.session_h5_files: list = []
         self.last_validation_result = None
 
+        # The recorder's sampling thread cannot open dialogs, so poll it for "buffer full".
+        self._buffer_timer = QTimer()
+        self._buffer_timer.setInterval(1000)
+        self._buffer_timer.timeout.connect(self._check_buffer_full)
+
     # ------------------------------------------------------------------
     # Buttons
     # ------------------------------------------------------------------
 
     def connect_buttons(self):
         """Connect Start/Pause/Stop once and set their initial state."""
-        if hasattr(self.ui, "btn_start_record"):
-            self.ui.btn_start_record.clicked.connect(self.start_recording)
-        if hasattr(self.ui, "btn_pause_record"):
-            self.ui.btn_pause_record.clicked.connect(self.toggle_pause)
-        if hasattr(self.ui, "btn_stop_record"):
-            self.ui.btn_stop_record.clicked.connect(self.stop_recording)
+        self.ui.btn_start_record.clicked.connect(self.start_recording)
+        self.ui.btn_pause_record.clicked.connect(self.toggle_pause)
+        self.ui.btn_stop_record.clicked.connect(self.stop_recording)
         self.update_buttons()
 
     def update_buttons(self):
         """Enable/label the buttons from the current state."""
-        if hasattr(self.ui, "btn_start_record"):
-            self.ui.btn_start_record.setEnabled(self.config_loaded and not self.is_recording)
-        if hasattr(self.ui, "btn_pause_record"):
-            self.ui.btn_pause_record.setEnabled(self.is_recording)
-            self.ui.btn_pause_record.setText("Resume" if self.is_paused else "Pause")
-        if hasattr(self.ui, "btn_stop_record"):
-            self.ui.btn_stop_record.setEnabled(self.is_recording)
+        self.ui.btn_start_record.setEnabled(self.config_loaded and not self.is_recording)
+        self.ui.btn_pause_record.setEnabled(self.is_recording)
+        self.ui.btn_pause_record.setText("Resume" if self.is_paused else "Pause")
+        self.ui.btn_stop_record.setEnabled(self.is_recording)
 
     def set_config_loaded(self, loaded: bool):
         """A config was loaded (Start becomes available) or cleared."""
         self.config_loaded = loaded
         self.update_buttons()
+
+    def _check_buffer_full(self):
+        """Tell the operator once when the recorder stopped sampling because its buffer is full."""
+        if self.data_recorder.buffer_full is True:
+            self._buffer_timer.stop()
+            CustomMessageBox.warning(
+                "The recording buffer is full: sampling has stopped. "
+                "Press Stop to save what was recorded.",
+                title="Recording Buffer Full",
+            )
 
     def toggle_pause(self):
         """Pause button slot: pause while recording, resume while paused."""
@@ -113,13 +124,14 @@ class RecordingController:
 
             if success:
                 CustomMessageBox.info(
-                    "Started Recording",
                     "Please check Record Page to visualize the topics.",
+                    title="Started Recording",
                 )
 
                 self.is_recording = True
                 self.is_paused = False
                 self.recording_start_time = time.time()
+                self._buffer_timer.start()
 
                 self.container_manager.set_statuses_by_data(
                     "Recording (Data Available)", "Recording (Waiting for Data)"
@@ -131,8 +143,8 @@ class RecordingController:
             else:
                 logger.error("Failed to start recording")
                 CustomMessageBox.error(
-                    "Recording Error",
                     "Could not start recording. Please check the config and topics.",
+                    title="Recording Error",
                 )
                 return False
 
@@ -143,12 +155,12 @@ class RecordingController:
             # /tf, /tf_static tree — fail loudly and visibly instead.
             logger.error(f"Custom TF topic subscription failed: {e}")
             CustomMessageBox.error(
-                "TF Topic Error",
                 f"A configured TF topic could not be read:\n\n{e}\n\n"
                 "Recording was NOT started — it will not silently fall back "
                 "to the default /tf, /tf_static topics. Check that the "
                 "topic is being published and that tf_topic/tf_static_topic "
                 "in your config are correct.",
+                title="TF Topic Error",
             )
             return False
         except Exception as e:
@@ -206,6 +218,7 @@ class RecordingController:
                 logger.warning("No recording in progress")
                 return False
 
+            self._buffer_timer.stop()
             success = self.data_recorder.stop_recording()
 
             if success:
@@ -247,6 +260,22 @@ class RecordingController:
                 return True
             else:
                 logger.error("Failed to stop recording")
+                if not self.data_recorder.is_recording:
+                    # The recorder already stopped but could not save: it keeps the samples in memory
+                    # and retries the save on the next Start. Leave the UI in the "stopped" state so
+                    # Start is available again instead of stuck on "Recording".
+                    self.is_recording = False
+                    self.is_paused = False
+                    self.topic_subscribers.clear_all_subscribers()
+                    self.container_manager.set_statuses_by_data(
+                        "Stopped (Data Available)", "Stopped (No Data)"
+                    )
+                    self.update_buttons()
+                    CustomMessageBox.error(
+                        "The recording could not be saved (check the disk). The data is still in "
+                        "memory: fix the problem and press Start to retry the save.",
+                        title="Recording Not Saved",
+                    )
                 return False
 
         except Exception as e:

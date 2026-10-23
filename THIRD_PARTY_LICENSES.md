@@ -18,7 +18,6 @@ or its upstream repository, not guessed from memory.
 | `pyqt5` | **GPL-3.0** (or a paid Riverbank commercial license) | See ⚠️ note below |
 | `pyqtgraph` | MIT | |
 | `xmltodict` | MIT | |
-| `scipy` | BSD-3-Clause | |
 
 ## Python — optional extra (`pip install ".[robomimic]"`)
 

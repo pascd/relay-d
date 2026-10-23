@@ -56,6 +56,14 @@ def set_level(level: str) -> None:
     logger.setLevel(name)
 
 
+def apply_user_level() -> None:
+    """Level from RELAYD_LOG_LEVEL if set, else from the ``log_level`` user setting, else INFO."""
+    from relay_d.utils import user_settings
+
+    level = (os.environ.get("RELAYD_LOG_LEVEL") or user_settings.get("log_level", "INFO")).upper()
+    logger.setLevel(level if level in _LEVELS else "INFO")
+
+
 logger = logging.getLogger("relay_d")
 if not any(getattr(h, "relayd", False) for h in logger.handlers):  # importing twice must not double every line
     _handler = _StdoutHandler()
@@ -63,5 +71,4 @@ if not any(getattr(h, "relayd", False) for h in logger.handlers):  # importing t
     _handler.setFormatter(_Formatter())
     logger.addHandler(_handler)
     logger.propagate = False
-    _env_level = os.environ.get("RELAYD_LOG_LEVEL", "INFO").upper()
-    logger.setLevel(_env_level if _env_level in _LEVELS else "INFO")
+    apply_user_level()

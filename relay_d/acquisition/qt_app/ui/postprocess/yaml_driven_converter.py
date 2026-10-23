@@ -13,6 +13,8 @@ import h5py
 import numpy as np
 from typing import Dict, List, Any, Optional, Tuple, Set
 from relay_d.utils.coloring_logger import logger
+from relay_d.utils import user_settings
+from relay_d.utils.numerics import normalize, quat_to_euler
 from .postprocess_options import PostprocessOptions
 import re
 import json
@@ -78,13 +80,10 @@ def _apply_normalization(
     for i, lim in enumerate(limits):
         lower = float(lim["lower_lim"])
         upper = float(lim["upper_lim"])
-        span = upper - lower
-        if span <= 0:
-            continue
         if data.ndim == 2:
-            out[:, i] = (data[:, i] - lower) / span * (hi - lo) + lo
+            out[:, i] = normalize(data[:, i], lower, upper, lo, hi)
         else:
-            out = (data - lower) / span * (hi - lo) + lo
+            out = normalize(data, lower, upper, lo, hi)
     return out
 
 
@@ -159,14 +158,19 @@ def _compute_delta(data: np.ndarray) -> np.ndarray:
 
 def _quat_to_rpy(data: np.ndarray, stream_name: str = "") -> np.ndarray:
     """(N, 4) quaternion (x, y, z, w) -> (N, 3) roll-pitch-yaw euler angles, radians."""
-    from scipy.spatial.transform import Rotation
-
     if data.ndim != 2 or data.shape[1] != 4:
         raise ValueError(
             f"rotation_format: rpy requires a 4-column quaternion stream (x,y,z,w); "
             f"stream '{stream_name}' has shape {tuple(data.shape)}."
         )
-    return Rotation.from_quat(data).as_euler("xyz", degrees=False).astype(np.float32)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rpy = quat_to_euler(data).astype(np.float32)
+    if not np.isfinite(rpy).all():  # a zero-length quaternion (an unfilled message): fail, never write NaN
+        bad = int((~np.isfinite(rpy).all(axis=1)).sum())
+        raise ValueError(
+            f"rotation_format: rpy: stream '{stream_name}' has {bad} row(s) with a zero-length or non-finite quaternion."
+        )
+    return rpy
 
 
 def _apply_rotation_format(
@@ -186,6 +190,25 @@ def _apply_rotation_format(
 # ---------------------------------------------------------------------------
 # DataTransformEngine
 # ---------------------------------------------------------------------------
+def _end_flags(n: int) -> np.ndarray:
+    """Rewards and dones of a demo: zero except the last step, which is 1."""
+    flags = np.zeros(n, dtype=np.float32)
+    if n > 0:
+        flags[-1] = 1.0
+    return flags
+
+
+def _next_obs(obs: np.ndarray) -> np.ndarray:
+    """next_obs[t] = obs[t+1]; the last step repeats itself so the length stays N."""
+    return np.concatenate([obs[1:], obs[-1:]], axis=0)
+
+
+def _stack_states(obs: Dict[str, Any], num_samples: int) -> np.ndarray:
+    """``states``: every float (N, M) obs array side by side in order; images (uint8) and 1-D arrays are skipped."""
+    parts = [v for v in obs.values() if isinstance(v, np.ndarray) and v.dtype != np.uint8 and v.ndim == 2]
+    return np.concatenate(parts, axis=1) if parts else np.zeros((num_samples, 1), dtype=np.float32)
+
+
 def natural_key(path: str) -> List:
     """Sort key for file names with numbers: rec_2.h5 before rec_10.h5."""
     parts = re.split(r"(\d+)", os.path.basename(path))
@@ -201,14 +224,11 @@ class DataTransformEngine:
       data_config – parsed data_config.yaml (the `config` sub-key)
     """
 
-    def __init__(self, config: Dict, data_config: Optional[Dict] = None):
-        self.config = config
+    def __init__(self, data_config: Optional[Dict] = None):
         self.data_config = data_config or {}
-        self.metadata = self.data_config.get("metadata", {})
 
         # Core maps built once at construction
         self.bridge_map: Dict[str, str] = self._build_bridge_map()
-        self.required_observations: Set[str] = self._extract_required_observations()
 
     # ------------------------------------------------------------------
     # Initialisation helpers
@@ -257,12 +277,6 @@ class DataTransformEngine:
             )
         return candidates[0] if candidates else None
 
-    def _extract_required_observations(self) -> Set[str]:
-        """
-        Collect required observation keys from the bridge map and conversion rules.
-        """
-        return set(self.bridge_map.keys())
-
     # ------------------------------------------------------------------
     # Path resolution
     # ------------------------------------------------------------------
@@ -294,17 +308,6 @@ class DataTransformEngine:
     # next_obs generation
     # ------------------------------------------------------------------
 
-    def generate_next_obs(self, obs_data: np.ndarray) -> np.ndarray:
-        """
-        Shift obs forward by 1 timestep; duplicate the last frame to maintain length N.
-
-        next_obs[t]   = obs[t+1]  for t in 0..N-2
-        next_obs[N-1] = obs[N-1]  (duplicate)
-        """
-        if len(obs_data) <= 1:
-            return obs_data.copy()
-        return np.concatenate([obs_data[1:], obs_data[-1:]], axis=0)
-
     # ------------------------------------------------------------------
     # Action generation
     # ------------------------------------------------------------------
@@ -330,15 +333,13 @@ class DataTransformEngine:
         delta_actions = self.data_config.get("delta_actions", [])
         stream_configs = self.data_config.get("output", {}).get("streams", {})
         action_parts: List[np.ndarray] = []
-        any_normalized = False
 
         for key in actions_to_extract:
+            # A missing action column would silently change the action size (or train on zeros),
+            # so fail the demo instead of skipping the key.
             path = self.resolve_path(key)
             if not path:
-                logger.warning(
-                    f"actions_to_extract key '{key}' not found in bridge_map, skipping"
-                )
-                continue
+                raise ValueError(f"actions_to_extract key '{key}' not found in bridge_map")
 
             data = self._get_nested_data(input_data, path)
             if data is None and "/" in path:
@@ -350,14 +351,11 @@ class DataTransformEngine:
                         f"('{path}' not found, matched '{field_name}')"
                     )
             if data is None:
-                logger.warning(
-                    f"actions_to_extract key '{key}' path '{path}' not found in data, skipping"
-                )
-                continue
+                raise ValueError(f"actions_to_extract key '{key}': path '{path}' not found in data")
 
             raw_data = np.array(data, dtype=np.float32)
             if len(raw_data) == 0:
-                continue
+                raise ValueError(f"actions_to_extract key '{key}': dataset '{path}' is empty")
 
             raw_data = self._resize_data(raw_data, num_samples)
             part = raw_data if raw_data.ndim > 1 else raw_data[:, np.newaxis]
@@ -368,48 +366,18 @@ class DataTransformEngine:
             part = _apply_rotation_format(part, rot_fmt, key)
             if normalize and limits:
                 part = _apply_normalization(part, limits, norm_range)
-                any_normalized = True
 
             if key in delta_actions:
                 part = _compute_delta(part)
             action_parts.append(part)
 
-        if not action_parts:
-            n_actions = _infer_n_actions(self.data_config)
-            return np.zeros((num_samples, n_actions), dtype=np.float32)
-
         actions = np.concatenate(action_parts, axis=1)
-
-        if self.metadata.get("normalize_actions", False) and not any_normalized:
-            logger.warning(
-                "normalize_actions is set but none of the actions_to_extract entries "
-                "configure normalize/limits under output.streams; skipping normalization."
-            )
 
         return actions
 
     # ------------------------------------------------------------------
     # Rewards / dones / states
     # ------------------------------------------------------------------
-
-    def generate_rewards(
-        self,
-        input_data: h5py.Group,
-        actions: np.ndarray,
-        num_samples: int,
-    ) -> np.ndarray:
-        """Zero rewards except the last step which is 1."""
-        rewards = np.zeros(num_samples, dtype=np.float32)
-        if num_samples > 0:
-            rewards[-1] = 1.0
-        return rewards
-
-    def generate_dones(self, num_samples: int) -> np.ndarray:
-        """All zeros except the last element which is 1."""
-        dones = np.zeros(num_samples, dtype=np.float32)
-        if num_samples > 0:
-            dones[-1] = 1.0
-        return dones
 
     # ------------------------------------------------------------------
     # HDF5 nested data reader
@@ -563,7 +531,7 @@ class YAMLDrivenConverter:
 
         # bridge_map/required_observations depend only on data_config, which is
         # identical for every demo in this batch — build the engine once.
-        engine = DataTransformEngine(fmt_config, self.data_config)
+        engine = DataTransformEngine(self.data_config)
         self._modality_map = self._build_modality_map()
 
         # Real-data shape/dtype cache: for every observation the config asks
@@ -571,7 +539,7 @@ class YAMLDrivenConverter:
         # resolves and record its real (feature_shape, dtype). Used to
         # zero-fill demos missing that key instead of guessing from its name.
         streams_cfg = self.data_config.get("output", {}).get("streams", {})
-        required_keys = set(streams_cfg.keys()) | set(engine.required_observations)
+        required_keys = set(streams_cfg.keys()) | set(engine.bridge_map)
         self._shape_cache, unresolved = self._prescan_shapes(
             sorted_files, engine, required_keys
         )
@@ -695,6 +663,7 @@ class YAMLDrivenConverter:
                 if counter == 0:
                     self.last_error = "No demos could be converted."
                     logger.error(self.last_error)
+                    self._discard_output(output_path)
                     return False
 
                 # Robomimic requires `total` = number of demos (not total timesteps)
@@ -707,7 +676,8 @@ class YAMLDrivenConverter:
                 train_frac = splits["train_frac"]
                 val_frac = splits["val_frac"]
                 test_frac = splits["test_frac"]
-                if(not self._create_data_mask(mask_grp, processed, train=train_frac, val=val_frac, test=test_frac)):
+                if not self._create_data_mask(mask_grp, processed, train=train_frac, val=val_frac, test=test_frac):
+                    self._discard_output(output_path)
                     return False
 
             if skipped:
@@ -720,9 +690,19 @@ class YAMLDrivenConverter:
             return True
 
         except Exception as e:
-            logger.error(f"Fatal error during conversion: {e}")
+            self.last_error = f"Fatal error during conversion: {e}"
+            logger.error(self.last_error)
             traceback.print_exc()
+            self._discard_output(output_path)
             return False
+
+    @staticmethod
+    def _discard_output(path: str) -> None:
+        """Delete a half-written output file (a leftover would make the CLI refuse to run again)."""
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # LeRobotDataset v3.0 output
@@ -826,7 +806,14 @@ class YAMLDrivenConverter:
         self._need_next_obs = False
         try:
             with LeRobotDatasetWriter(
-                output_dir, fps=fps, robot_type=lerobot_cfg.get("robot_type")
+                output_dir, fps=fps, robot_type=lerobot_cfg.get("robot_type"),
+                # encoder and file-size settings (Settings page / ~/.relayd_settings.json)
+                chunks_size=user_settings.get("lerobot_chunks_size"),
+                data_files_size_in_mb=user_settings.get("lerobot_data_file_mb"),
+                video_files_size_in_mb=user_settings.get("lerobot_video_file_mb"),
+                video_crf=user_settings.get("lerobot_video_crf"),
+                video_preset=user_settings.get("lerobot_video_preset"),
+                video_gop=user_settings.get("lerobot_gop"),
             ) as writer:
                 for file_path in sorted_files:
                     if not file_path.endswith(".h5"):
@@ -1075,9 +1062,7 @@ class YAMLDrivenConverter:
                     data = np.zeros((num_samples,) + feat_shape, dtype=dtype)
 
                 demo["obs"][stream_name] = data
-                demo["next_obs"][stream_name] = np.concatenate(
-                    [data[1:], data[-1:]], axis=0
-                )
+                demo["next_obs"][stream_name] = _next_obs(data)
 
             actions_to_extract = self.data_config.get("actions_to_extract", [])
             delta_actions = self.data_config.get("delta_actions", [])
@@ -1116,24 +1101,9 @@ class YAMLDrivenConverter:
                 n_actions = _infer_n_actions(self.data_config)
                 demo["actions"] = np.zeros((num_samples, n_actions), dtype=np.float32)
 
-            demo["rewards"] = np.zeros(num_samples, dtype=np.float32)
-            if num_samples > 0:
-                demo["rewards"][-1] = 1.0
-            demo["dones"] = np.zeros(num_samples, dtype=np.float32)
-            if num_samples > 0:
-                demo["dones"][-1] = 1.0
-
-            # Build states by concatenating every float (N, M) obs array in YAML stream order.
-            # Image arrays (uint8) and 1-D arrays are skipped.
-            state_parts = [
-                v for v in demo["obs"].values()
-                if isinstance(v, np.ndarray) and v.dtype != np.uint8 and v.ndim == 2
-            ]
-            demo["states"] = (
-                np.concatenate(state_parts, axis=1)
-                if state_parts
-                else np.zeros((num_samples, 1), dtype=np.float32)
-            )
+            demo["rewards"] = _end_flags(num_samples)
+            demo["dones"] = _end_flags(num_samples)
+            demo["states"] = _stack_states(demo["obs"], num_samples)
 
             logger.info(
                 f"Stream-based conversion: {demo_name}, "
@@ -1168,7 +1138,7 @@ class YAMLDrivenConverter:
         coexist with (or stand in for) output.streams-based obs.
         """
         required_keys = sorted(
-            k for k in engine.required_observations
+            k for k in engine.bridge_map
             if k not in self._excluded_keys and k not in demo["obs"]
         )
         if not required_keys:
@@ -1208,7 +1178,7 @@ class YAMLDrivenConverter:
 
                 demo["obs"][obs_key] = raw
                 if self._need_next_obs:
-                    demo["next_obs"][obs_key] = engine.generate_next_obs(raw)
+                    demo["next_obs"][obs_key] = _next_obs(raw)
                 continue
 
             cached = self._shape_cache.get(obs_key)
@@ -1275,19 +1245,9 @@ class YAMLDrivenConverter:
             demo["actions"] = engine.generate_actions(
                 demo_data, demo["obs"], num_samples
             )
-            demo["rewards"] = engine.generate_rewards(
-                demo_data, demo["actions"], num_samples
-            )
-            demo["dones"] = engine.generate_dones(num_samples)
-            state_parts = [
-                v for v in demo["obs"].values()
-                if isinstance(v, np.ndarray) and v.dtype != np.uint8 and v.ndim == 2
-            ]
-            demo["states"] = (
-                np.concatenate(state_parts, axis=1)
-                if state_parts
-                else np.zeros((num_samples, 1), dtype=np.float32)
-            )
+            demo["rewards"] = _end_flags(num_samples)
+            demo["dones"] = _end_flags(num_samples)
+            demo["states"] = _stack_states(demo["obs"], num_samples)
 
             return demo
 
@@ -1320,7 +1280,7 @@ class YAMLDrivenConverter:
         # Top-level datasets
         for ds_name in ("states", "actions", "rewards", "dones"):
             arr = demo[ds_name].astype(np.float32)
-            dg.create_dataset(ds_name, data=arr, compression="gzip")
+            dg.create_dataset(ds_name, data=arr, **user_settings.h5_compression())
 
         # obs and next_obs
         for group_name in ("obs", "next_obs"):
@@ -1328,7 +1288,7 @@ class YAMLDrivenConverter:
             for key, data in demo[group_name].items():
                 is_image = data.dtype == np.uint8 or key in self._modality_map
 
-                kwargs: Dict[str, Any] = {"compression": "gzip", "dtype": data.dtype}
+                kwargs: Dict[str, Any] = {**user_settings.h5_compression(), "dtype": data.dtype}
                 if is_image and data.ndim >= 3:
                     # Per-frame chunking for efficient sequential reads during training
                     kwargs["chunks"] = (1,) + data.shape[1:]
@@ -1338,16 +1298,23 @@ class YAMLDrivenConverter:
     def _create_data_mask(self, mask_group: h5py.Group, demo_names: List[str], train: float, val: float, test: float):
         vlen_str_type = h5py.special_dtype(vlen=str)
 
+        for name, frac in (("train", train), ("val", val), ("test", test)):
+            if not isinstance(frac, (int, float)) or isinstance(frac, bool) or not 0 <= frac <= 1:
+                self.last_error = f"robomimic.splits: '{name}' must be a number between 0 and 1, got {frac!r}"
+                logger.error(self.last_error)
+                return False
+        if train + val > 1 + 1e-9:
+            self.last_error = f"robomimic.splits: train ({train}) + val ({val}) is more than 1"
+            logger.error(self.last_error)
+            return False
+
         sorted_demo_names = sorted(demo_names)
         total_demos = len(sorted_demo_names)
 
-        train_count = int(total_demos * train)
-        val_count = int(total_demos * val)
+        # At least one training demo when training is asked for (int() would give 0 for few demos).
+        train_count = max(1, int(total_demos * train)) if train > 0 and total_demos else 0
+        val_count = min(int(total_demos * val), total_demos - train_count)
         test_count = total_demos - train_count - val_count
-
-        if(train_count + val_count + test_count != total_demos):
-            logger.warning(f"Train/Val/Test split does not sum to total demos. Adjusting test count.")
-            return False
 
         if(train_count != 0):
             mask_group.create_dataset(

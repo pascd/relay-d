@@ -344,9 +344,6 @@ class YamlParser:
             return yaml.dump(self.yaml_data, default_flow_style=False)
         return ""
 
-    def get_config_data(self):
-        return self.yaml_config_data
-
     def get_input_data(self):
         return self.yaml_input_data
 
@@ -355,9 +352,6 @@ class YamlParser:
 
     def get_output_data(self):
         return self.yaml_output_data
-
-    def get_prefix_path(self):
-        return self.prefix_path
 
     def get_dataset_name(self):
         return self.dataset_name

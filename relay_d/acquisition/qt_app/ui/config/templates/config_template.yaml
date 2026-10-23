@@ -14,7 +14,6 @@ config:
   dataset_name: my_robot_demo     # prefix used for HDF5 group names (e.g. demo_0, demo_1)
   recording_frequency: 20         # samples per second saved to disk (Hz)
   # max_buffer_mb: 4096           # optional: recording stops sampling past this much buffered image data (Stop still saves)
-  normalize_actions: false        # reserved — keep false
 
   # ---------------------------------------------------------------------------
   # inputs — define every sensor source

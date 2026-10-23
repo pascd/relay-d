@@ -63,6 +63,7 @@ _VCODEC = "libx264"
 _PIX_FMT = "yuv420p"
 _GOP = 2
 _CRF = 23
+_PRESET = "veryfast"
 
 _MAX_STAT_FRAMES = 100  # frames sampled per episode for image statistics
 _MAX_STAT_SIDE = 150  # sampled frames are strided down to about this size
@@ -208,7 +209,8 @@ def _pandas_index_metadata() -> Dict[bytes, bytes]:
 class _VideoFile:
     """One open mp4 (PyAV container) that episodes are appended to."""
 
-    def __init__(self, path: Path, fps: int, width: int, height: int):
+    def __init__(self, path: Path, fps: int, width: int, height: int,
+                 crf: int = _CRF, preset: str = _PRESET, gop: int = _GOP):
         check_dependencies(need_video=True)
         import av
 
@@ -219,7 +221,7 @@ class _VideoFile:
         self.stream = self.container.add_stream(
             _VCODEC,
             rate=fps,
-            options={"g": str(_GOP), "crf": str(_CRF), "preset": "veryfast", "bf": "0"},
+            options={"g": str(gop), "crf": str(crf), "preset": preset, "bf": "0"},
         )
         self.stream.width = width
         self.stream.height = height
@@ -259,6 +261,9 @@ class LeRobotDatasetWriter:
         data_files_size_in_mb: int = DEFAULT_DATA_FILE_SIZE_IN_MB,
         video_files_size_in_mb: int = DEFAULT_VIDEO_FILE_SIZE_IN_MB,
         images_are_bgr: bool = True,
+        video_crf: int = _CRF,
+        video_preset: str = _PRESET,
+        video_gop: int = _GOP,
     ):
         check_dependencies(need_video=False)
         fps = int(fps)
@@ -274,6 +279,7 @@ class LeRobotDatasetWriter:
         self.chunks_size = chunks_size
         self.data_max_mb = data_files_size_in_mb
         self.video_max_mb = video_files_size_in_mb
+        self.video_crf, self.video_preset, self.video_gop = int(video_crf), str(video_preset), int(video_gop)
         self.images_are_bgr = images_are_bgr
 
         self._features: Optional[Dict[str, Dict]] = None
@@ -453,9 +459,9 @@ class LeRobotDatasetWriter:
                     "video.pix_fmt": _PIX_FMT,
                     "video.fps": self.fps,
                     "video.channels": 3,
-                    "video.g": _GOP,
-                    "video.crf": _CRF,
-                    "video.preset": "veryfast",
+                    "video.g": self.video_gop,
+                    "video.crf": self.video_crf,
+                    "video.preset": self.video_preset,
                     "video.is_depth_map": False,
                     "has_audio": False,
                 },
@@ -576,7 +582,10 @@ class LeRobotDatasetWriter:
             state = {"chunk": 0, "file": 0, "video": None}
             self._videos[key] = state
         if state["video"] is None:
-            state["video"] = _VideoFile(self._video_path(key, state["chunk"], state["file"]), self.fps, w, h)
+            state["video"] = _VideoFile(
+                self._video_path(key, state["chunk"], state["file"]), self.fps, w, h,
+                crf=self.video_crf, preset=self.video_preset, gop=self.video_gop,
+            )
 
         video = state["video"]
         from_ts = video.frames / self.fps

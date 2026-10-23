@@ -1,8 +1,8 @@
 import os
 import shutil
+import time
 
 from PyQt5.QtWidgets import QWidget, QButtonGroup
-from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QFileDialog
 from datetime import datetime
 from relay_d.dispatch import DispatcherHelpers
@@ -16,6 +16,7 @@ from ..postprocess.robomimic_config_handler import (
     classify_observations,
 )
 from ..settings.config_manager import config
+from relay_d.utils import user_settings
 from relay_d.utils.coloring_logger import logger
 from ...utils.custom_message_box import CustomMessageBox
 from ...utils.default_configs import generate_default_configs
@@ -37,7 +38,6 @@ class PostProcessPage(QWidget):
         self.settings_page = settings_page
 
         self.h5_files = []
-        self.h5_html_structure = []
         self.h5_parser = h5FileParser()
         self.output_format = ""
 
@@ -61,9 +61,6 @@ class PostProcessPage(QWidget):
         self.setup_format_buttons()
         self._update_config_label()
         self._update_options_label()
-
-        # Connect to config changes
-        config.settings_changed.connect(self._on_settings_changed)
 
     # ------------------------------------------------------------------
     # Config signal wiring  (mirrors RecordPage.connect_to_config_signals)
@@ -114,9 +111,7 @@ class PostProcessPage(QWidget):
         return self._local_parser if self._local_parser is not None else self.yaml_parser
 
     def _update_config_label(self):
-        label = getattr(self.ui, "label_postprocess_config", None)
-        if label is None:
-            return
+        label = self.ui.label_postprocess_config
         if self._local_parser is not None:
             name = os.path.basename(self._local_parser.get_current_config_path() or "")
             label.setText(f"{name} (post-process only)")
@@ -124,9 +119,7 @@ class PostProcessPage(QWidget):
             label.setText("from Config page")
         else:
             label.setText("No config loaded")
-        clear_btn = getattr(self.ui, "btn_clear_postprocess_config", None)
-        if clear_btn is not None:
-            clear_btn.setEnabled(self._local_parser is not None)
+        self.ui.btn_clear_postprocess_config.setEnabled(self._local_parser is not None)
 
     def _load_postprocess_config(self):
         """Load a config for post-processing only: no topic/TF availability check,
@@ -173,17 +166,13 @@ class PostProcessPage(QWidget):
     # ------------------------------------------------------------------
 
     def _update_options_label(self):
-        label = getattr(self.ui, "label_postprocess_options", None)
         source = self.yaml_converter.options.source
-        if label is not None:
-            if source:
-                kind = "" if self._options_explicit else " (auto-detected)"
-                label.setText(f"{os.path.basename(source)}{kind}")
-            else:
-                label.setText("defaults")
-        clear_btn = getattr(self.ui, "btn_clear_postprocess_options", None)
-        if clear_btn is not None:
-            clear_btn.setEnabled(bool(source))
+        if source:
+            kind = "" if self._options_explicit else " (auto-detected)"
+            self.ui.label_postprocess_options.setText(f"{os.path.basename(source)}{kind}")
+        else:
+            self.ui.label_postprocess_options.setText("defaults")
+        self.ui.btn_clear_postprocess_options.setEnabled(bool(source))
 
     def _load_postprocess_options(self):
         try:
@@ -268,66 +257,20 @@ class PostProcessPage(QWidget):
         self.yaml_converter.data_config = data_config
 
     # ------------------------------------------------------------------
-    # Settings
-    # ------------------------------------------------------------------
-
-    def _on_settings_changed(self, settings):
-        """Handle settings changes via signal"""
-        if "hdf5_load_folder" in settings:
-            folder = settings["hdf5_load_folder"]
-            if folder and hasattr(self.ui, "lineEdit_hdf5_load_folder"):
-                self.ui.lineEdit_hdf5_load_folder.setText(folder)
-
-        if "enable_compression" in settings:
-            logger.info(
-                f"Post-process compression set to {settings['enable_compression']}"
-            )
-
-    # ------------------------------------------------------------------
     # UI wiring
     # ------------------------------------------------------------------
 
     def setup_connections(self):
         """Setup all button connections"""
-        try:
-            if hasattr(self.ui, "btn_convert_dataset"):
-                self.ui.btn_convert_dataset.clicked.connect(self.convert_dataset)
-
-            if hasattr(self.ui, "btn_load_h5"):
-                self.ui.btn_load_h5.clicked.connect(self._select_files_to_convert)
-
-            if hasattr(self.ui, "btn_clear_preview"):
-                self.ui.btn_clear_preview.clicked.connect(self.clear_h5_preview)
-
-            if hasattr(self.ui, "btn_generate_postprocess_configs"):
-                self.ui.btn_generate_postprocess_configs.clicked.connect(
-                    lambda: generate_default_configs(self.ui)
-                )
-
-            if hasattr(self.ui, "btn_load_postprocess_config"):
-                self.ui.btn_load_postprocess_config.clicked.connect(
-                    self._load_postprocess_config
-                )
-
-            if hasattr(self.ui, "btn_clear_postprocess_config"):
-                self.ui.btn_clear_postprocess_config.clicked.connect(
-                    self._clear_postprocess_config
-                )
-
-            if hasattr(self.ui, "btn_load_postprocess_options"):
-                self.ui.btn_load_postprocess_options.clicked.connect(
-                    self._load_postprocess_options
-                )
-
-            if hasattr(self.ui, "btn_clear_postprocess_options"):
-                self.ui.btn_clear_postprocess_options.clicked.connect(
-                    self._clear_postprocess_options
-                )
-
-        except Exception as e:
-            logger.error("Error setting up connections.")
-
-        return
+        ui = self.ui
+        ui.btn_convert_dataset.clicked.connect(self.convert_dataset)
+        ui.btn_load_h5.clicked.connect(self._select_files_to_convert)
+        ui.btn_clear_preview.clicked.connect(self.clear_h5_preview)
+        ui.btn_generate_postprocess_configs.clicked.connect(lambda: generate_default_configs(ui))
+        ui.btn_load_postprocess_config.clicked.connect(self._load_postprocess_config)
+        ui.btn_clear_postprocess_config.clicked.connect(self._clear_postprocess_config)
+        ui.btn_load_postprocess_options.clicked.connect(self._load_postprocess_options)
+        ui.btn_clear_postprocess_options.clicked.connect(self._clear_postprocess_options)
 
     def setup_format_buttons(self):
         """Setup format selection buttons defined in .ui file"""
@@ -356,7 +299,7 @@ class PostProcessPage(QWidget):
                     self.format_button_group.addButton(button)
                     self.format_buttons[format_name] = button
 
-                    if format_name == "robomimic":
+                    if format_name == user_settings.get("postprocess_default_format"):  # setting
                         button.setChecked(True)
                         self.output_format = format_name
                         self.show_output_structure_preview(format_name)
@@ -397,17 +340,11 @@ class PostProcessPage(QWidget):
             button.blockSignals(blocked)
 
     def clear_output_preview(self):
-        if hasattr(self.ui, "txt_output_preview"):
-            self.ui.txt_output_preview.clear()
+        self.ui.txt_output_preview.clear()
 
     def show_output_structure_preview(self, format_name):
-        html_preview = self.config_loader.generate_html_structure_preview(format_name)
-        if hasattr(self.ui, "txt_output_preview"):
-            self.ui.txt_output_preview.setHtml(html_preview)
-            self.ui.txt_output_preview.show()
-        else:
-            logger.error("txt_output_preview widget not found")
-            CustomMessageBox.warning("No output preview widget found.")
+        self.ui.txt_output_preview.setHtml(self.config_loader.generate_html_structure_preview(format_name))
+        self.ui.txt_output_preview.show()
 
     # ------------------------------------------------------------------
     # File selection
@@ -418,9 +355,8 @@ class PostProcessPage(QWidget):
         logger.info("Opening file browser")
 
         # Get the same folder where datasets are saved by default, for better UX. Fall back to home if not set.
-        if self.settings_page:
-            save_folder = self.settings_page.get_hdf5_save_folder()
-            processed_dir = os.path.join(save_folder, "recorded_data") if save_folder else os.path.expanduser("~")
+        save_folder = self.settings_page.get_hdf5_save_folder() if self.settings_page else ""
+        processed_dir = os.path.join(save_folder, "recorded_data") if save_folder else os.path.expanduser("~")
 
         fn, _ = QFileDialog.getOpenFileNames(
             parent=None,
@@ -429,44 +365,22 @@ class PostProcessPage(QWidget):
             directory=processed_dir,
         )
 
-        logger.info(f"Selected files result: {fn}, type: {type(fn)}")
-
-        if not fn or (isinstance(fn, (list, tuple)) and len(fn) == 0):
+        if not fn:
             logger.info("No file selected by user.")
             return
 
-        file_list = list(fn) if fn else []
-
-        if not file_list:
-            logger.info("No file selected by user (empty list).")
-            return
-
-        self.h5_files = file_list
+        self.h5_files = list(fn)
         logger.info(f"Files loaded: {self.h5_files}. Total files: {len(self.h5_files)}")
-
-        self.h5_html_structure = self.h5_parser.convert_h5_to_html(self.h5_files[0])
-        self.show_h5_preview(self.h5_html_structure)
-        return
+        self.show_h5_preview(self.h5_parser.convert_h5_to_html(self.h5_files[0]))
 
     def show_h5_preview(self, html_string):
-        if hasattr(self.ui, "txt_input_structure"):
-            self.h5_html_structure = []
-            self.ui.txt_input_structure.clear()
-            self.ui.txt_input_structure.setHtml(html_string)
-        else:
-            logger.error("No txt_input_structure found.")
-            CustomMessageBox.warning("No preview widget found to display the H5 file structure.")
-        return
+        self.ui.txt_input_structure.clear()
+        self.ui.txt_input_structure.setHtml(html_string)
 
     def clear_h5_preview(self):
-        if hasattr(self.ui, "txt_input_structure"):
-            self.ui.txt_input_structure.clear()
-            self.h5_html_structure = []
-            self.h5_files = []
-            CustomMessageBox.info("Cleared H5 file preview and reset loaded files.")
-        else:
-            logger.error("No txt_input_structure found.")
-            CustomMessageBox.warning("No preview widget found to clear.")
+        self.ui.txt_input_structure.clear()
+        self.h5_files = []
+        CustomMessageBox.info("Cleared H5 file preview and reset loaded files.")
         return
 
     # ------------------------------------------------------------------
@@ -499,24 +413,18 @@ class PostProcessPage(QWidget):
 
         logger.info(f"Converting dataset to {self.output_format} format.")
 
-        fmt_config = self.config_loader.get_config(self.output_format)
-        if not fmt_config:
-            logger.error(f"Config not found for format: {self.output_format}")
-            return
-
         timestamp_folder = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-        # Determine output path - use settings save folder if available, otherwise default to home directory
-        if self.settings_page:
-            save_folder = self.settings_page.get_hdf5_save_folder()
-            output_dir = os.path.join(save_folder, timestamp_folder)
-        else:
-            output_dir = os.path.join(os.path.expanduser("~/.RelayDApp"), timestamp_folder)
-            logger.warning(f"The save_folder is not set, please set it in the Settings page. Defaulting to {timestamp_folder}")
+        # The Recordings folder setting, else ~/.RelayDApp
+        save_folder = self.settings_page.get_hdf5_save_folder() if self.settings_page else ""
+        if not save_folder:
+            save_folder = os.path.expanduser("~/.RelayDApp")
+            logger.warning(f"The recordings folder is not set (Settings page). Defaulting to {save_folder}")
+        output_dir = os.path.join(save_folder, timestamp_folder)
 
         os.makedirs(output_dir, exist_ok=True)
 
-        timestamp = int(__import__("time").time())
+        timestamp = int(time.time())
         # LeRobot datasets are directories (parquet + mp4 + metadata); the other
         # formats are single HDF5 files.
         extension = "" if self.output_format == "lerobot" else ".h5"
@@ -566,23 +474,16 @@ class PostProcessPage(QWidget):
                         os.path.join(output_dir, f"{self.output_format}_config.json")
                     )
 
-                # The action_dispatcher files target the robomimic inference path
-                if self.output_format != "lerobot":
-                    # For the dispatcher add the obs_config.yaml based on the acquired config
-                    action_dispatcher_folder = os.path.join(output_dir, "action_dispatcher")
-                    obs_config_path = os.path.join(action_dispatcher_folder, "obs_config.yaml")
-
-                    os.makedirs(action_dispatcher_folder, exist_ok=True)
-
-                    # Add the obs_config.yaml converted
-                    parser = self._active_parser()
-                    parser.save_yaml_file(file_path=obs_config_path, data=parser.get_obs_config())
-
-                    # Add the action_config_template (the user changes as it may need)
-                    self.dispatcher_helper.save_action_template(output_dir=action_dispatcher_folder)
-
-                    # Add the inference script for deploy
-                    self.dispatcher_helper.save_inference_script(output_dir=action_dispatcher_folder)
+                # The dispatcher files (robomimic and LeRobot policies both run through lfd-inference-node):
+                # obs_config.yaml from the acquired config, an action_config to adapt, and the inference script
+                action_dispatcher_folder = os.path.join(output_dir, "action_dispatcher")
+                os.makedirs(action_dispatcher_folder, exist_ok=True)
+                parser = self._active_parser()
+                parser.save_yaml_file(
+                    file_path=os.path.join(action_dispatcher_folder, "obs_config.yaml"), data=parser.get_obs_config()
+                )
+                self.dispatcher_helper.save_action_template(output_dir=action_dispatcher_folder)
+                self.dispatcher_helper.save_inference_script(output_dir=action_dispatcher_folder)
 
             except Exception as e:
                 post_error = str(e) or type(e).__name__
@@ -602,7 +503,7 @@ class PostProcessPage(QWidget):
             )
         else:
             logger.error("Dataset conversion failed")
-            reason = getattr(self.yaml_converter, "last_error", None)
+            reason = self.yaml_converter.last_error
             CustomMessageBox.error(
                 "Failed to convert dataset." + (f"\n\n{reason}" if reason else "")
             )

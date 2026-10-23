@@ -12,7 +12,7 @@ def main():
   # Required checkpoint path argument
   parser.add_argument("--checkpoint",
                       required=True,
-                      help="Path to policy checkpoint (.pth or .pt)")
+                      help="robomimic checkpoint (.pth) or LeRobot pretrained_model folder")
 
   # Observation configuration file path
   parser.add_argument("--obs-config",
@@ -41,29 +41,17 @@ def main():
                       default=5.0,
                       help="Seconds to wait for all observations before starting inference (default: 5.0)")
 
-  # Override action horizon for diffusion policy models
-  parser.add_argument("--action-horizon",
-                      type=int,
-                      default=None,
-                      help="Override the diffusion policy's receding-horizon control window "
-                            "(number of actions consumed per replan) instead of using the "
-                            "value baked into the checkpoint's training config. Only used "
-                            "with --backend custom --model-type diffusion (or auto-detected "
-                            "diffusion). Must be within [1, pred_horizon - (obs_horizon - 1)].")
-
-  parser.add_argument("--model-type",
-                      default="auto",
-                      help="Model type for the custom backend (default: auto-detect from the checkpoint)")
-
-  # Select inference backend implementation
+  # Inference backend: robomimic .pth file or LeRobot pretrained_model folder
   parser.add_argument("--backend",
-                      choices=["custom", "robomimic"],
-                      default="custom",
-                      help="Inference backend: 'custom' (model_runner.py, no robomimic "
-                            "dependency) or 'robomimic' (robomimic's own RolloutPolicy, "
-                            "loaded via FileUtils.policy_from_checkpoint). --model-type and "
-                            "--obs-keys are ignored for 'robomimic' (derived from the "
-                            "checkpoint's own shape_metadata/algo_name). Default: custom")
+                      choices=["auto", "robomimic", "lerobot"],
+                      default="auto",
+                      help="auto: robomimic for a .pth/.pt file, lerobot for a pretrained_model folder")
+
+  # LeRobot only: which observations form observation.state
+  parser.add_argument("--state-keys",
+                      default=None,
+                      help="lerobot only: comma-separated observations that form observation.state, in order "
+                            "(default: read from the dataset the policy was trained on)")
 
   # Parse command-line arguments
   args = parser.parse_args()
@@ -75,12 +63,11 @@ def main():
           action_config=args.action_config,
           device=args.device,
           backend=args.backend,
-          model_type=args.model_type,
-          action_horizon=args.action_horizon,
+          state_keys=[k.strip() for k in args.state_keys.split(",")] if args.state_keys else None,
       )
 
   # Start inference session
-  session.run()
+  session.run(hz=args.hz, validate_timeout=args.obs_wait)
 
 if __name__ == "__main__":
   main()

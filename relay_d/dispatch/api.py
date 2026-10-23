@@ -5,13 +5,13 @@ Programmatic entry point into the LfD inference/dispatch system, for use
 outside the `lfd-inference-node` CLI (notebooks, scripts, REPL, other nodes).
 
 InferenceSession wires together the same three pieces inference_node.py's
-CLI does — ObsBuilder, a policy runner (ModelRunner or RobomimicPolicyRunner),
-and ActionDispatcher — and exposes them as plain method calls:
+CLI does — ObsBuilder, a policy runner (RobomimicPolicyRunner or
+LeRobotPolicyRunner) and ActionDispatcher — and exposes them as plain method calls:
 
     from relay_d.dispatch import InferenceSession
 
     with InferenceSession(
-        checkpoint="model.pth",
+        checkpoint="model.pth",              # robomimic .pth, or a LeRobot pretrained_model folder
         obs_config="config/obs_config.yaml",
         action_config="config/action_config.yaml",
         device="cpu",
@@ -23,24 +23,27 @@ and ActionDispatcher — and exposes them as plain method calls:
         # or run the full loop, same as the CLI:
         session.run(hz=20)
 
-Lower-level building blocks (ModelRunner, ObsBuilder, ActionDispatcher,
-load_policy, detect_model_type) are re-exported below for direct/advanced use.
+The backend is chosen by `backend=` ("robomimic" / "lerobot"), by default from the
+checkpoint itself ("auto", see detect_backend). ObsBuilder and ActionDispatcher are
+re-exported below for direct/advanced use.
 """
 
 from __future__ import annotations
 
+import logging
 import time
 import numpy as np
 
 from importlib import resources
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
-from .model_runner import ModelRunner, detect_model_type, load_policy
+from .lerobot_runner import resolve_checkpoint
+from relay_d.utils import user_settings
 from relay_d.utils.coloring_logger import logger
 
 # ObsBuilder/ActionDispatcher/rclpy require a sourced ROS2 environment. Guard
-# the import so that pure-Python pieces (ModelRunner, load_policy, ...) stay
-# importable in environments without ROS2 (e.g. offline debug/analysis venvs).
+# the import so that pure-Python pieces (detect_backend, DispatcherHelpers) stay
+# importable in environments without ROS2.
 try:
     import rclpy
     from rclpy.executors import MultiThreadedExecutor
@@ -58,13 +61,28 @@ except ImportError as _e:
 
 __all__ = [
     "InferenceSession",
-    "ModelRunner",
     "ObsBuilder",
     "ActionDispatcher",
     "DispatcherHelpers",
-    "detect_model_type",
-    "load_policy",
+    "detect_backend",
 ]
+
+BACKENDS = ("robomimic", "lerobot")
+
+
+def detect_backend(checkpoint) -> str:
+    """"lerobot" for a LeRobot ``pretrained_model`` folder (or a folder holding one, like ``checkpoints/last``),
+    "robomimic" for a ``.pth`` / ``.pt`` / ``.ckpt`` file."""
+    path = Path(checkpoint)
+    if resolve_checkpoint(path) is not None:
+        return "lerobot"
+    if path.is_file() and path.suffix in (".pth", ".pt", ".ckpt"):
+        return "robomimic"
+    raise ValueError(
+        f"cannot tell the backend of '{checkpoint}': expected a robomimic .pth file or a LeRobot "
+        "pretrained_model folder (config.json + model.safetensors). Pass --backend explicitly if needed."
+    )
+
 
 def _wait_for_obs(obs_node: ObsBuilder, obs_keys: List[str], timeout: float, poll: float = 0.1) -> bool:
     """Block until all obs_keys appear in get_obs(), or timeout expires."""
@@ -108,11 +126,12 @@ class InferenceSession:
         obs_config: str,
         action_config: str,
         device: str = "cpu",
-        backend: str = "custom",
-        model_type: str = "auto",
-        obs_keys: Optional[List[str]] = None,
-        action_horizon: Optional[int] = None,
+        backend: Optional[str] = None,
+        state_keys: Optional[List[str]] = None,
     ):
+        """``backend``: "robomimic", "lerobot" or "auto" (default: the infer_backend setting, "auto" detects it from
+        the checkpoint). ``state_keys``: LeRobot only, the observations that form observation.state, in order
+        (default: read from the dataset the policy was trained on)."""
         if _ROS_IMPORT_ERROR is not None:
             raise ImportError(
                 "InferenceSession requires a sourced ROS2 environment "
@@ -120,6 +139,11 @@ class InferenceSession:
                 "available in this Python environment."
             ) from _ROS_IMPORT_ERROR
 
+        backend = backend or user_settings.get("infer_backend")
+        if backend == "auto":
+            backend = detect_backend(checkpoint)
+        if backend not in BACKENDS:
+            raise ValueError(f"unknown backend '{backend}' (choose from {BACKENDS} or 'auto')")
         if not rclpy.ok():
             rclpy.init()
 
@@ -129,12 +153,10 @@ class InferenceSession:
             from .robomimic_runner import RobomimicPolicyRunner
             self.model = RobomimicPolicyRunner(checkpoint, device=device)
         else:
-            self.model = ModelRunner(
-                checkpoint,
-                device=device,
-                obs_keys=obs_keys,
-                model_type=model_type,
-                action_horizon=action_horizon,
+            from .lerobot_runner import LeRobotPolicyRunner
+            self.model = LeRobotPolicyRunner(
+                checkpoint, device=device, state_keys=state_keys,
+                fallback_state_keys=self.obs_node.low_dim_obs_names,
             )
 
         self.dispatcher = ActionDispatcher(self.obs_node, action_config)
@@ -157,6 +179,7 @@ class InferenceSession:
             self._spin_thread.start()
 
     def close(self) -> None:
+        self.dispatcher.close()
         self._executor.shutdown()
         self.obs_node.destroy_node()
         if rclpy.ok():
@@ -199,9 +222,22 @@ class InferenceSession:
     def dispatch(self, action: np.ndarray) -> None:
         self.dispatcher.dispatch(action)
 
-    def step(self) -> np.ndarray:
-        """One full tick: get latest obs -> predict -> dispatch. Returns the action."""
+    def _stale_inputs(self, max_obs_age: float) -> Dict[str, float]:
+        """Inputs, and the observations the model uses, that have not refreshed within max_obs_age."""
+        ages = self.obs_node.get_input_ages()
+        obs_ages = self.obs_node.get_obs_ages()
+        ages.update({f"obs:{k}": obs_ages[k] for k in self.model.obs_keys if k in obs_ages})
+        return {k: round(v, 2) for k, v in ages.items() if v > max_obs_age}
+
+    def step(self, max_obs_age: Optional[float] = None) -> Optional[np.ndarray]:
+        """One full tick: get latest obs -> predict -> dispatch. Returns the action, or None
+        (nothing dispatched) if an input is older than max_obs_age, like run()."""
+        max_obs_age = user_settings.get("infer_max_obs_age_s") if max_obs_age is None else max_obs_age
         obs = self.get_observation()
+        stale = self._stale_inputs(max_obs_age)
+        if stale:
+            logger.error(f"[InferenceSession] Stale inputs (> {max_obs_age}s), not dispatching: {stale}")
+            return None
         action = self.predict(obs)
         self.dispatch(action)
         return action
@@ -213,8 +249,12 @@ class InferenceSession:
     # Full loop (same behavior as the inference_node.py CLI)
     # -------------------------------------------------------------------
 
-    def run(self, hz: float = 0.0, max_steps: Optional[int] = None, validate_timeout: float = 10.0,
-            max_obs_age: float = 1.0) -> None:
+    def run(self, hz: float = 0.0, max_steps: Optional[int] = None,
+            validate_timeout: Optional[float] = None, max_obs_age: Optional[float] = None) -> None:
+        # None = the user setting (infer_obs_wait_s, infer_max_obs_age_s). hz stays 0 here: only the
+        # command line takes its default rate from the infer_hz setting.
+        validate_timeout = user_settings.get("infer_obs_wait_s") if validate_timeout is None else validate_timeout
+        max_obs_age = user_settings.get("infer_max_obs_age_s") if max_obs_age is None else max_obs_age
         self.start()
 
         self.obs_node.get_logger().info(
@@ -252,13 +292,13 @@ class InferenceSession:
                 t0 = time.monotonic()
 
                 obs = self.get_observation()
-                logger.debug(
-                    "[InferenceSession] obs: "
-                    + ", ".join(f"{k}={np.round(obs[k], 4)}" for k in self.model.obs_keys if k in obs)
-                )
+                if logger.isEnabledFor(logging.DEBUG):  # vectors only: never format whole camera frames
+                    logger.debug(
+                        "[InferenceSession] obs: "
+                        + ", ".join(f"{k}={np.round(obs[k], 4)}" for k in self.model.obs_keys if k in obs and obs[k].ndim == 1)
+                    )
 
-                ages = self.obs_node.get_input_ages()
-                stale = {k: round(v, 2) for k, v in ages.items() if v > max_obs_age}
+                stale = self._stale_inputs(max_obs_age)
                 if stale:
                     self.obs_node.get_logger().error(
                         f"Stale inputs (> {max_obs_age}s without new data), not dispatching: {stale}",

@@ -3,7 +3,6 @@ import cv2
 import numpy as np
 import time
 import os
-import rclpy
 import datetime
 import math
 
@@ -15,7 +14,6 @@ from geometry_msgs.msg import PoseStamped, Twist, TransformStamped
 from std_msgs.msg import String, Float32, Float64, Int32, Bool
 from tf2_msgs.msg import TFMessage
 from sensor_msgs_py import point_cloud2
-from PyQt5.QtWidgets import QLabel
 from PyQt5.QtCore import QTimer, QMutex, Qt
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtMultimedia import QMediaPlayer
@@ -34,7 +32,7 @@ class ContainerVisualizer:
         self.temp_video_files = {}  # container_id -> temp file path
 
         # Visualization update rate (Hz)
-        self.update_rate = config.get("update_rate", 20) or 20
+        self.update_rate = config.get("visualizer_update_rate", 20) or 20
 
         self.framerate_window = {}  # container_id -> list of arrival times (for rolling FPS)
 
@@ -44,9 +42,9 @@ class ContainerVisualizer:
     def _on_settings_changed(self, settings):
         """Handle settings changes via signal (Triggered when Save is clicked)"""
         # 1. Update Update Rate
-        if "update_rate" in settings:
-            rate = settings["update_rate"]
-            if rate and rate > 0:
+        if "visualizer_update_rate" in settings:
+            rate = settings["visualizer_update_rate"]
+            if rate and rate > 0 and rate != self.update_rate:
                 self.update_rate = rate
                 for timer in self.visualization_timers.values():
                     timer.setInterval(1000 // self.update_rate)
@@ -360,7 +358,6 @@ class ContainerVisualizer:
             # Extract basic point cloud information
             num_points = pc_msg.width * pc_msg.height
             point_step = pc_msg.point_step
-            row_step = pc_msg.row_step
 
             # Get field names
             field_names = [field.name for field in pc_msg.fields]
@@ -856,8 +853,6 @@ class ContainerVisualizer:
     def _update_status_info(self, container, msg_type, message_count):
         """Update container status information"""
         try:
-            status_text = f"Type: {msg_type}\nMessages: {message_count}"
-
             if hasattr(container, "label_status"):
                 container.label_status.setText(f"Active ({message_count} msgs)")
 

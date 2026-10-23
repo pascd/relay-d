@@ -16,7 +16,7 @@ from relay_d.acquisition.qt_app.ui.postprocess.postprocess_config_loader import 
 from relay_d.acquisition.qt_app.ui.postprocess.yaml_driven_converter import (  # noqa: E402
     YAMLDrivenConverter,
 )
-from test_lerobot_conversion import DATA_CONFIG, LENGTHS, _write_recording  # noqa: E402
+from helpers import DATA_CONFIG, LENGTHS, write_recording  # noqa: E402
 
 PostprocessOptions = po.PostprocessOptions
 
@@ -116,7 +116,7 @@ def _converter(config=None):
 
 def test_robomimic_uses_options_file(tmp_path):
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, LENGTHS)
+    write_recording(rec, LENGTHS)
     conv = _converter()
     conv.options, _ = PostprocessOptions.load(_write(tmp_path / "postprocess_config.yaml", FILE_OPTIONS))
     out = tmp_path / "rm.h5"
@@ -130,7 +130,7 @@ def test_robomimic_uses_options_file(tmp_path):
 
 def test_robomimic_legacy_config_still_works(tmp_path):
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, LENGTHS)
+    write_recording(rec, LENGTHS)
     cfg = json.loads(json.dumps(DATA_CONFIG))
     cfg["metadata"] = {"env_name": "LegacyEnv", "env_version": "1", "type": 1, "env_kwargs": {}}
     conv = _converter(cfg)
@@ -142,7 +142,7 @@ def test_robomimic_legacy_config_still_works(tmp_path):
 
 def test_lerobot_uses_options_file(tmp_path):
     rec = tmp_path / "recording_0.h5"
-    _write_recording(rec, LENGTHS)
+    write_recording(rec, LENGTHS)
     conv = _converter()
     conv.options, _ = PostprocessOptions.load(_write(tmp_path / "postprocess_config.yaml", FILE_OPTIONS))
     out = tmp_path / "lr"

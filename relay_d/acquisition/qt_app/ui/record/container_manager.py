@@ -188,10 +188,6 @@ class ContainerManager:
             # Force UI refresh
             self.force_ui_refresh()
 
-            # Debug container and subscriber status
-            self.topic_containers.debug_containers()
-            self.topic_subscribers.debug_subscribers()
-
             logger.info(
                 f"Successfully created {len(created_containers)} containers (subscribers will start on record)"
             )
@@ -221,24 +217,6 @@ class ContainerManager:
                 self.topic_containers.update_container_info(
                     container, {"status": status}
                 )
-
-    def get_container_data(self, input_name):
-        """Get the latest ROS data for a container by input name"""
-        container = self.get_container_by_input_name(input_name)
-        if container:
-            return self.topic_subscribers.get_container_data(container)
-        return None
-
-    def get_container_by_input_name(self, input_name):
-        """Get container by input name"""
-        for container in self.topic_containers.containers:
-            if hasattr(container, "input_name") and container.input_name == input_name:
-                return container
-        return None
-
-    def get_all_container_info(self):
-        """Get information about all containers"""
-        return self.topic_containers.get_all_container_info()
 
     def restart_failed_subscribers(self):
         """Restart subscribers that failed to create or stopped working"""
@@ -274,29 +252,6 @@ class ContainerManager:
 
         logger.info(f"Restarted {restarted_count} subscribers")
         return restarted_count
-
-    def update_container_statuses(self):
-        """Update all container statuses based on current subscriber state"""
-        for container in self.topic_containers.containers:
-            container_id = getattr(container, "container_id", None)
-            if container_id:
-                if self.topic_subscribers.has_data(container_id):
-                    message_count = self.topic_subscribers.get_message_count(
-                        container_id
-                    )
-                    status = f"Active ({message_count} msgs)"
-                else:
-                    subscriber_status = self.topic_subscribers.get_subscriber_status(
-                        container_id
-                    )
-                    if subscriber_status.get("status") == "active":
-                        status = "Waiting for Data"
-                    else:
-                        status = "No Subscriber"
-
-                self.topic_containers.update_container_info(
-                    container, {"status": status}
-                )
 
     def force_ui_refresh(self):
         """Force UI refresh"""

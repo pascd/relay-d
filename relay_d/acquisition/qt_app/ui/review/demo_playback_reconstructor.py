@@ -19,9 +19,7 @@ from geometry_msgs.msg import PoseStamped, Twist, TransformStamped
 from std_msgs.msg import String, Float32, Float64, Int32, Bool
 
 from relay_d.utils.coloring_logger import logger
-
-# Groups under data/<demo_name>/ that are not "raw input" containers.
-_NON_INPUT_GROUPS = {"streams", "metadata", "gripper_states"}
+from .demo_validator import NON_INPUT_GROUPS
 
 _SIMPLE_MSG_CLASSES = {
     "string": String,
@@ -289,7 +287,7 @@ class DemoPlaybackReader:
     def _scan_channels(self):
         channels = []
         for name, item in self.demo_group.items():
-            if name in _NON_INPUT_GROUPS or not isinstance(item, h5py.Group):
+            if name in NON_INPUT_GROUPS or not isinstance(item, h5py.Group):
                 continue
             channels.append(self._classify_group(name, item))
         return channels

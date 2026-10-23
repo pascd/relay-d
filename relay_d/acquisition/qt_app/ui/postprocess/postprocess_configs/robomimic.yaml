@@ -4,29 +4,24 @@ format:
   description: "Robomimic dataset format for imitation learning"
 
 output_structure:
-  type: "hierarchical"
   root_groups:
     - name: "data"
       groups:
         - name: "demo_{i}"
           datasets:
             - name: "states"
-              type: "array"
               shape: [num_samples, state_dim]
               dtype: "float32"
               description: "Environment states"
             - name: "actions"
-              type: "array"
               shape: [num_samples, action_dim]
               dtype: "float32"
               description: "Action sequences for robot control"
             - name: "rewards"
-              type: "array"
               shape: [num_samples]
               dtype: "float32"
               description: "Reward signals"
             - name: "dones"
-              type: "array"
               shape: [num_samples]
               dtype: "float32"
               description: "Episode termination flags"
@@ -35,42 +30,34 @@ output_structure:
               description: "Observations at current timestep"
               datasets:
                 - name: "*_image"
-                  type: "array"
                   shape: [num_samples, height, width, channels]
                   dtype: "uint8"
                   description: "Image observations from cameras"
                 - name: "*_joint_pos"
-                  type: "array"
                   shape: [num_samples, num_joints]
                   dtype: "float32"
                   description: "Joint position observations"
                 - name: "*_joint_vel"
-                  type: "array"
                   shape: [num_samples, num_joints]
                   dtype: "float32"
                   description: "Joint velocity observations"
                 - name: "*_eef_pos"
-                  type: "array"
                   shape: [num_samples, 3]
                   dtype: "float32"
                   description: "End effector position"
                 - name: "*_eef_quat"
-                  type: "array"
                   shape: [num_samples, 4]
                   dtype: "float32"
                   description: "End effector orientation quaternion"
                 - name: "*_gripper_qpos"
-                  type: "array"
                   shape: [num_samples, 2]
                   dtype: "float32"
                   description: "Gripper position"
                 - name: "object_pos"
-                  type: "array"
                   shape: [num_samples, 3]
                   dtype: "float32"
                   description: "Object translation"
                 - name: "object_quat"
-                  type: "array"
                   shape: [num_samples, 4]
                   dtype: "float32"
                   description: "Object rotation quaternion"
@@ -78,42 +65,34 @@ output_structure:
               description: "Observations at next timestep"
               datasets:
                 - name: "*_image"
-                  type: "array"
                   shape: [num_samples, height, width, channels]
                   dtype: "uint8"
                   description: "Image observations from cameras (shifted)"
                 - name: "*_joint_pos"
-                  type: "array"
                   shape: [num_samples, num_joints]
                   dtype: "float32"
                   description: "Joint position observations (shifted)"
                 - name: "*_joint_vel"
-                  type: "array"
                   shape: [num_samples, num_joints]
                   dtype: "float32"
                   description: "Joint velocity observations (shifted)"
                 - name: "*_eef_pos"
-                  type: "array"
                   shape: [num_samples, 3]
                   dtype: "float32"
                   description: "End effector position (shifted)"
                 - name: "*_eef_quat"
-                  type: "array"
                   shape: [num_samples, 4]
                   dtype: "float32"
                   description: "End effector orientation quaternion (shifted)"
                 - name: "*_gripper_qpos"
-                  type: "array"
                   shape: [num_samples, 2]
                   dtype: "float32"
                   description: "Gripper position (shifted)"
                 - name: "object_pos"
-                  type: "array"
                   shape: [num_samples, 3]
                   dtype: "float32"
                   description: "Object translation (shifted)"
                 - name: "object_quat"
-                  type: "array"
                   shape: [num_samples, 4]
                   dtype: "float32"
                   description: "Object rotation quaternion (shifted)"
@@ -135,6 +114,5 @@ output_structure:
       description: "Dataset filtering mask"
       datasets:
         - name: "valid"
-          type: "array"
           dtype: "string"
           description: "List of valid demo names"

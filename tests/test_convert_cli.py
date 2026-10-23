@@ -12,15 +12,15 @@ import yaml
 pytest.importorskip("av")
 
 from relay_d.acquisition.convert_cli import collect_inputs, main  # noqa: E402
-from test_lerobot_conversion import DATA_CONFIG, LENGTHS, _write_recording  # noqa: E402
+from helpers import DATA_CONFIG, LENGTHS, write_recording  # noqa: E402
 
 
 @pytest.fixture
 def workspace(tmp_path):
     rec_dir = tmp_path / "recordings" / "sub"
     rec_dir.mkdir(parents=True)
-    _write_recording(rec_dir / "rec_2.h5", [6])
-    _write_recording(rec_dir / "rec_10.h5", LENGTHS)
+    write_recording(rec_dir / "rec_2.h5", [6])
+    write_recording(rec_dir / "rec_10.h5", LENGTHS)
     cfg = tmp_path / "acquisition_config.yaml"
     cfg.write_text(yaml.safe_dump({"config": DATA_CONFIG}))
     return tmp_path, cfg

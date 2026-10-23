@@ -23,7 +23,7 @@ _SEVERITY = {CheckStatus.PASS: 0, CheckStatus.WARN: 1, CheckStatus.FAIL: 2}
 
 # Groups under data/<demo_name>/ that are not "raw input" containers and
 # should be skipped when scanning for per-input sample-count/joint checks.
-_NON_INPUT_GROUPS = {"streams", "metadata", "gripper_states"}
+NON_INPUT_GROUPS = {"streams", "metadata", "gripper_states"}
 
 # Dataset keys (in priority order) used to determine an input group's sample count.
 _PRIMARY_DATASET_KEYS = (
@@ -71,10 +71,8 @@ class DemoValidator:
         "max_fill_pct_fail": 0.50,  # -> fail
     }
 
-    def __init__(self, thresholds: dict = None):
-        self.thresholds = dict(self.DEFAULT_THRESHOLDS)
-        if thresholds:
-            self.thresholds.update(thresholds)
+    def __init__(self):
+        self.thresholds = self.DEFAULT_THRESHOLDS
 
     def validate(self, h5_path: str) -> DemoValidationResult:
         result = DemoValidationResult(file_path=h5_path)
@@ -265,7 +263,7 @@ class DemoValidator:
                     mismatches.append(f"streams/{name}: {ds.shape[0]} rows vs {n} timestamps")
 
         for name, item in grp.items():
-            if name in _NON_INPUT_GROUPS or not isinstance(item, h5py.Group):
+            if name in NON_INPUT_GROUPS or not isinstance(item, h5py.Group):
                 continue
             for key in _PRIMARY_DATASET_KEYS:
                 if key in item:

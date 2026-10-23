@@ -1,0 +1,87 @@
+"""DataRecorder._save_recorded_data without ROS: rclpy and the message packages are replaced by stubs."""
+
+import sys
+import types
+
+import h5py
+import numpy as np
+from helpers import image_sample, joint_sample, make_recorder
+
+
+def test_leading_none_samples_are_padded_not_dropped(recorder_cls, tmp_path):
+    rec = make_recorder(
+        recorder_cls, tmp_path, [1, 2, 3, 4], {"cam": [None, None, image_sample(), image_sample()], "arm": [joint_sample()] * 4}
+    )
+    assert rec._save_recorded_data() is True
+    demo = rec.h5_file["data/d"]
+    assert demo["cam/images"].shape == (4, 2, 2, 3)  # same length as timestamps
+    assert demo["arm/joint_positions"].shape == (4, 1)
+    assert "joint_velocities" not in demo["arm"]  # all-empty series are not written
+
+
+def test_failed_type_save_makes_the_whole_save_fail(recorder_cls, tmp_path):
+    ragged = {"type": "pose", "position": [0.0, 0.0, 0.0], "orientation": [0.0]}  # cannot be stacked with the next
+    rec = make_recorder(recorder_cls, tmp_path, [1, 2], {"pose": [ragged, {**ragged, "orientation": [0.0, 1.0]}]})
+    assert rec._save_recorded_data() is False  # was reported as saved with an "error_data" note
+
+
+def test_joint_series_mixed_lengths_saved_as_variable_length(recorder_cls, tmp_path):
+    rec = make_recorder(recorder_cls, tmp_path, [1, 2], {})
+    rec._save_joint_series(rec.h5_file, "joint_positions", [[1.0, 2.0], [3.0], []])
+    assert [len(r) for r in rec.h5_file["joint_positions"][:]] == [2, 1]
+    rec._save_joint_series(rec.h5_file, "joint_efforts", [[], []])
+    assert "joint_efforts" not in rec.h5_file
+
+
+def test_buffer_accounting_counts_every_array_of_a_sample(recorder_cls):
+    module = sys.modules[recorder_cls.__module__]
+    image = {"type": "image", "data": np.zeros((10, 10, 3), np.uint8)}
+    cloud = {"type": "pointcloud", "points": np.zeros((64, 1024, 3), np.float32), "fields": ["x", "y", "z"]}
+    assert module._sample_nbytes(image) == 300
+    assert module._sample_nbytes(cloud) == 64 * 1024 * 3 * 4  # was 0: scans never reached max_buffer_mb
+    assert module._sample_nbytes({"type": "pose", "position": [0.0, 0.0, 0.0]}) == 0
+
+
+def test_stacked_write_matches_np_stack_with_one_chunk_per_frame(recorder_cls, tmp_path, monkeypatch):
+    module = sys.modules[recorder_cls.__module__]
+    frames = [np.full((4, 5, 3), i, np.uint8) for i in range(6)]
+    with h5py.File(tmp_path / "s.h5", "w") as f:
+        ds = module._write_stacked(f, "images", frames)  # default setting: gzip
+        assert ds.compression == "gzip" and ds.chunks == (1, 4, 5, 3)
+        assert np.array_equal(ds[:], np.stack(frames))
+        monkeypatch.setattr(module.user_settings, "h5_compression", lambda: {})
+        plain = module._write_stacked(f, "plain", frames)
+        assert plain.compression is None and plain.chunks is None and np.array_equal(plain[:], np.stack(frames))
+
+
+def test_changing_the_recordings_folder_starts_a_new_session_folder(recorder_cls, tmp_path):
+    parser = types.SimpleNamespace(is_loaded=lambda: False, yaml_data=None)
+    rec = recorder_cls(parser)
+    rec.set_output_directory(str(tmp_path / "a"))
+    rec.recorded_data_dir = str(tmp_path / "a" / "2026-01-01_00-00-00")  # the session folder of the first demo
+    rec.set_output_directory(str(tmp_path / "a"))  # a settings save that did not change the folder
+    assert rec.recorded_data_dir is not None
+    rec.is_recording = True  # never move a running recording
+    rec.set_output_directory(str(tmp_path / "b"))
+    assert rec.output_directory == str(tmp_path / "b") and rec.recorded_data_dir is not None
+    rec.is_recording = False
+    rec.set_output_directory(str(tmp_path / "c"))
+    assert rec.recorded_data_dir is None  # the next demo opens a fresh session folder in "c"
+    rec.set_output_directory("")
+    assert rec.output_directory is None
+
+
+def test_a_message_that_breaks_a_processor_is_skipped_not_raised(recorder_cls):
+    """The one try/except in _process_message_for_recording covers every per-type helper."""
+    module = sys.modules[recorder_cls.__module__]
+    for name in ("Image", "CompressedImage", "PointCloud2", "JointState", "PoseStamped", "Twist",
+                 "TransformStamped", "String", "Float32", "Float64", "Int32", "Bool"):
+        setattr(module, name, type(name, (), {}))  # the module's message classes are MagicMocks in this test
+    rec = recorder_cls(types.SimpleNamespace(is_loaded=lambda: False, yaml_data=None))
+
+    twist = module.Twist()
+    assert rec._process_message_for_recording(twist, "cmd") is None  # no .linear / .angular: AttributeError inside
+    twist.linear = types.SimpleNamespace(x=1.0, y=2.0, z=3.0)
+    twist.angular = types.SimpleNamespace(x=0.0, y=0.0, z=0.5)
+    assert rec._process_message_for_recording(twist, "cmd") == {
+        "type": "twist", "linear": [1.0, 2.0, 3.0], "angular": [0.0, 0.0, 0.5]}

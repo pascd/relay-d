@@ -7,7 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (audit)
+- **Dispatch:** a message with a mapped field that cannot be set is no longer published; int/bool fields
+  are cast correctly; a command whose send failed is retried; all outputs are computed before any is
+  sent; `step()` has the same stale-input check as `run()`; `close()` stops started shell commands.
+- **Inference:** stale check also covers held observations (`ObsBuilder.get_obs_ages()`); static TF
+  inputs count as fresh; observations are evaluated once per `get_obs()`; the checkpoint is loaded once.
+- **Subscriptions** match a best-effort publisher's QoS (`relay_d/utils/qos.py`).
+- **Recording:** samples before a sensor's first message are padded, not dropped; a failed save is
+  reported (and the GUI can retry it); stop waits for the sampling loop; the loop backs off on
+  repeated errors; the GUI warns when the buffer is full.
+- **Conversion:** a missing action key fails the demo; split fractions are validated; failed runs
+  delete their half-written output; training and inference share one normalization rule
+  (`relay_d/utils/numerics.py`).
+
+### Changed (inference backends)
+- `lfd-inference-node` / `InferenceSession` run exactly two backends: **robomimic** (`.pth`) and the new **LeRobot** one
+  (`relay_d/dispatch/lerobot_runner.py`: ACT, Diffusion, ... from a `pretrained_model` folder). `--backend auto` (the default, and
+  the new default of the `infer_backend` setting) picks it from the checkpoint. The LeRobot runner feeds `observation.state` in the
+  order of the training dataset's `meta/info.json` and the cameras as RGB CHW floats, and matches LeRobot's own `select_action`
+  exactly (checked for ACT and Diffusion on checkpoints trained from a Relay-D dataset). New `--state-keys` option.
+- Post-process writes the `action_dispatcher/` files (obs_config, action template, inference script) for LeRobot datasets too.
+- Removed: the custom backend (`model_runner.py`: BC-MLP / RNN / GMM, Diffusion, TorchScript), `--model-type`, `--obs-keys`,
+  `--action-horizon`, the `infer_backend` value `custom` (an old saved one falls back to `auto`), the `dispatch` extra, and
+  `debug/equivalence_test.py` + `debug/replay_parity.py` (they compared the custom backend with robomimic).
+
+### Changed (simplification, no behaviour change)
+- Removed dead code: debug dumps, unused pass-through methods and widget guards in the Record page, unused accessors,
+  guards for widgets that always exist (Post-process, Review, recording buttons), duplicate constants
+  (`NON_INPUT_GROUPS`, `TF_REMAP_ARGS`), the unused `sample` option of the GMM policy and `DemoValidator(thresholds=)`,
+  the converter's repeated rewards / dones / next_obs / states code, unread YAML keys, and the unused imports.
+- The two dispatch config templates lose their repeated and commented-out copies of entries (the live entries are
+  unchanged) and the comments that contradicted the code. Module docstrings that repeated the templates are shorter.
+- Tests: shared fixtures and helpers live in `tests/conftest.py` and `tests/helpers.py`.
+- Fixed on the way: an empty "Recordings folder" setting made Post-process write into the current directory;
+  `inference_script_template.py` ignored its `--hz` and `--obs-wait` options.
+
+### Fixed (Ctrl+C)
+- Ctrl+C in a training window ends the run and closes the window at once (it waited for Enter before); the run shows
+  as "stopped". Ctrl+C in the terminal that started `RelayDApp` closes the app through its normal cleanup.
+
+### Fixed (review)
+- A zero-length quaternion in a `rotation_format: rpy` stream stops the conversion again (it had become NaN in the
+  dataset when scipy was replaced by `relay_d.utils.numerics`).
+- Train tab: the job is built when you click Start (and the inputs are locked while it is checked), and the run is
+  started in the background. "Reset this tab" in Settings no longer saves or discards edits on other tabs; the robot
+  description of the last playback is remembered. CI installs Qt and OpenCV so the page and viewer tests run.
+
+### Fixed (audit 2)
+- **Recording:** point clouds now count towards `max_buffer_mb` (they were never counted, so a scan recording could
+  fill the RAM); images are written frame by frame instead of through `np.stack` (no second full copy at Stop);
+  changing the Recordings folder starts a new session folder.
+- **LeRobot viewer:** plain `list<float>` columns (datasets from other tools) are read; an episode is cut out of the
+  data file instead of converting the whole column for every episode (1000 episodes: about 10 s to 0.24 s); each
+  episode is checked once; the PyAV fallback keeps one open decoder and seeks instead of decoding from the start.
+- **Train tab:** the environment check and Stop run in a background thread (they froze the window and the ROS spin timer).
+- **Settings:** only values that differ from the default are stored, so a better default in a later release reaches
+  everyone; the app's start-up / live-change logic is in tested pure functions (`qt_app/settings_apply.py`).
+- The config files next to a dataset are chosen by the dataset's name when a folder holds several.
+- Removed dead code for a settings widget that no longer exists; CI now fails on undefined names.
+
+### Fixed (Train tab)
+- A terminal that fails to open (no D-Bus, missing flag) is skipped for the next one, then the run falls back to the
+  background instead of silently never starting; the run script no longer exits non-zero when it has no tty.
+- LeRobot: removed the unconfirmed `--wandb.enable` flag (off by default), a camera is required for ACT / Diffusion
+  (clear error instead of a LeRobot crash), docs no longer mention the non-existent `--eval_freq`.
+- "Check environment" imports what the run imports, so a torch / torchvision mismatch is reported with both versions.
+- Three dialogs in the recording controller had their title and message swapped.
+
+### Removed
+- The `scipy` dependency (quaternion to roll/pitch/yaw is now `relay_d.utils.numerics.quat_to_euler`).
+
 ### Added
+- **Review tab opens LeRobot datasets** (`ui/review/lerobot_reader.py`): episode list with checks, camera selector
+  and frame slider, state / action curves. View-only. When a folder has both recorded demos and a dataset, a
+  source selector appears.
+- **Complete Settings page**, generated from one table (`relay_d/utils/user_settings.py`, no Qt, also read by
+  the command-line tools): theme (now persisted and applied at start), log level, startup page, ROS spin interval
+  and domain id, recording defaults used when the YAML is silent (frequency, buffer, sync, warm-up, session folder
+  name), HDF5 compression (replaces the dead `enable_compression`), TF / topic timeouts and QoS depth, review
+  defaults, post-process defaults and LeRobot encoder settings, training and inference defaults. The old
+  duplicate settings writer, the unused `auto_save` and the `recording_frequency` live override were removed.
+- **Train tab and `relay-d-train`** (`relay_d/training/`): start robomimic or LeRobot (ACT, Diffusion) training
+  on a converted dataset from the GUI or the command line. It opens a terminal that keeps running when the
+  GUI closes, lets you edit epochs/steps, batch size, learning rate and more, checks the Python
+  environment, and lists / stops / follows runs (`training_runs/` next to the dataset).
 - **"Generate Defaults..." buttons** on the Config and Post-process pages: copy
   `config_template.yaml` and `postprocess_config_template.yaml` into a folder you pick. That
   folder is saved as the `config_folder` setting and is where the Insert / Load Config /

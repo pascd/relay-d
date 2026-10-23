@@ -623,39 +623,6 @@ class TopicContainers:
         except Exception as e:
             logger.error(f"Failed to update container info: {e}")
 
-    def get_container_by_id(self, container_id):
-        """Get container by its ID"""
-        for container in self.containers:
-            if (
-                hasattr(container, "container_id")
-                and container.container_id == container_id
-            ):
-                return container
-        return None
-
-    def get_all_container_info(self):
-        """
-        Get information about all containers
-
-        Returns:
-            list: List of dictionaries with container information
-        """
-        container_info = []
-        for container in self.containers:
-            info = {
-                "container_id": getattr(container, "container_id", "unknown"),
-                "topic_type": getattr(container, "topic_type", "unknown"),
-            }
-
-            # Add any additional attributes that exist
-            for attr_name in ["input_name", "topic_path", "topic_type_msg", "status"]:
-                if hasattr(container, attr_name):
-                    info[attr_name] = getattr(container, attr_name)
-
-            container_info.append(info)
-
-        return container_info
-
     def create_multiple_containers(self, container_specs, target_widget=None):
         """
         Create multiple containers from a list of specifications - STRETCHING VERSION
@@ -865,72 +832,6 @@ class TopicContainers:
 
         except Exception as e:
             logger.error(f"Error in comprehensive layout update: {e}")
-
-    def debug_containers(self):
-        """Debug method to log container information"""
-        try:
-            logger.info(f"=== Container Debug Info ===")
-            logger.info(f"Total containers tracked: {len(self.containers)}")
-
-            for i, container in enumerate(self.containers):
-                container_id = getattr(container, "container_id", "unknown")
-                is_visible = container.isVisible()
-                size = container.size()
-                pos = container.pos()
-                parent = container.parent()
-                parent_name = parent.objectName() if parent else "None"
-
-                logger.info(f"Container {i + 1}: {container_id}")
-                logger.info(f"  Visible: {is_visible}")
-                logger.info(f"  Size: {size.width()}x{size.height()}")
-                logger.info(f"  Position: ({pos.x()}, {pos.y()})")
-                logger.info(f"  Parent: {parent_name}")
-
-                # Check if container is in a layout
-                if parent and parent.layout():
-                    layout = parent.layout()
-                    if hasattr(layout, "indexOf"):
-                        index = layout.indexOf(container)
-                        logger.info(f"  Layout index: {index}")
-
-                    # For grid layouts, find the position
-                    if isinstance(layout, QGridLayout):
-                        found_position = None
-                        for row in range(layout.rowCount()):
-                            for col in range(layout.columnCount()):
-                                item = layout.itemAtPosition(row, col)
-                                if item and item.widget() == container:
-                                    found_position = (row, col)
-                                    break
-                            if found_position:
-                                break
-                        logger.info(f"  Grid position: {found_position}")
-
-            # Also debug the layout itself
-            if hasattr(self.ui, "page_start") and hasattr(
-                self.ui.page_start, "_container_layout_setup"
-            ):
-                layout = self.ui.page_start._container_layout_setup
-                logger.info(f"=== Grid Layout Debug ===")
-                logger.info(f"Grid rows: {layout.rowCount()}")
-                logger.info(f"Grid columns: {layout.columnCount()}")
-                logger.info(f"Grid item count: {layout.count()}")
-
-                # Check each position in the grid
-                widget_count_in_grid = 0
-                for row in range(layout.rowCount()):
-                    for col in range(layout.columnCount()):
-                        item = layout.itemAtPosition(row, col)
-                        if item and item.widget():
-                            widget_count_in_grid += 1
-                            widget = item.widget()
-                            widget_id = getattr(widget, "container_id", "unknown")
-                            logger.info(f"  Position ({row}, {col}): {widget_id}")
-
-                logger.info(f"Total widgets in grid: {widget_count_in_grid}")
-
-        except Exception as e:
-            logger.error(f"Error in debug_containers: {e}")
 
     def reset_layout_references(self, target_widget):
         """Reset layout references when clearing containers"""

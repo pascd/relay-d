@@ -1,22 +1,9 @@
 """Post-process page: the output-format buttons behave like a single-choice toggle."""
 
-import sys
-import types
-from unittest.mock import MagicMock
-
 import pytest
 
 pytest.importorskip("PyQt5")
 from PyQt5.QtWidgets import QMainWindow  # noqa: E402
-
-# relay_d.dispatch pulls in torch; the page only needs DispatcherHelpers from it.
-if "relay_d.dispatch" not in sys.modules:
-    stub = types.ModuleType("relay_d.dispatch")
-    stub.DispatcherHelpers = MagicMock
-    try:
-        import relay_d.dispatch  # noqa: F401
-    except Exception:
-        sys.modules["relay_d.dispatch"] = stub
 
 from relay_d.acquisition.qt_app.ui.config.yaml_parser import YamlParser  # noqa: E402
 from relay_d.acquisition.qt_app.ui.postprocess import postprocess_page as pp  # noqa: E402

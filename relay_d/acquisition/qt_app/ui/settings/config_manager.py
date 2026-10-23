@@ -1,10 +1,16 @@
 import os
-import json
+
 from PyQt5.QtCore import QObject, pyqtSignal
+
+from relay_d.utils import user_settings
 
 
 class ConfigManager(QObject):
-    # This signal notifies other parts of the app when settings change
+    """Qt wrapper around ``relay_d.utils.user_settings`` (the store the command-line tools read too).
+
+    It adds the ``settings_changed`` signal: listeners get the full settings dict after every save.
+    """
+
     settings_changed = pyqtSignal(dict)
 
     _instance = None
@@ -19,36 +25,15 @@ class ConfigManager(QObject):
         if self._initialized:
             return
         super().__init__()
-        self.settings_file = os.path.join(
-            os.path.expanduser("~"), ".relayd_settings.json"
-        )
-        self.settings = self.load_settings()
+        self.settings = user_settings.reload()
         self._initialized = True
 
-    def load_settings(self):
-        default_settings = {
-            "hdf5_save_folder": "",
-            "hdf5_load_folder": "",
-            "config_folder": "",
-            "enable_compression": False,
-            "freeze_containers": True,
-            "theme": "light",
-        }
-        if os.path.exists(self.settings_file):
-            try:
-                with open(self.settings_file, "r") as f:
-                    loaded = json.load(f)
-                    default_settings.update(loaded)
-                    return default_settings
-            except Exception as e:
-                print(f"Error loading settings file: {e}")
-        return default_settings
+    @property
+    def settings_file(self):
+        return str(user_settings.settings_file())
 
     def save_settings(self, new_settings):
-        self.settings.update(new_settings)
-        with open(self.settings_file, "w") as f:
-            json.dump(self.settings, f, indent=4)
-        # Trigger the update for any listening files
+        self.settings = user_settings.save(new_settings)
         self.settings_changed.emit(self.settings)
 
     def get(self, key, default=None):
