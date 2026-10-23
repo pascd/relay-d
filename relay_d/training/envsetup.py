@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -22,6 +21,9 @@ from relay_d.training import launcher
 
 PYTHON_VERSION = "3.12"  # dispatch needs rclpy (ROS Jazzy: Python 3.12), so every environment is 3.12
 _STALE_SECONDS = 900
+
+# lerobot: pinned, because launcher.py hard-codes its training module and command-line flags.
+LEROBOT_VERSION = "0.6.1"
 
 # robomimic: the source checkout version the code is tested with (PyPI stops at 0.3.0; diffusion_policy needs master).
 # Installed with --no-deps: its pins (egl_probe, which only robosuite environments import) are replaced by the list below.
@@ -40,7 +42,7 @@ class EnvSpec:
 ENVS = {
     "lerobot": EnvSpec(
         "lerobot",
-        ((("lerobot[training]", "lerobot[diffusion]")),),  # Diffusion needs its own extra
+        ((("lerobot[training]==" + LEROBOT_VERSION, "lerobot[diffusion]==" + LEROBOT_VERSION)),),  # Diffusion needs its own extra
         "import lerobot, torch; print('lerobot ok, torch', torch.__version__, 'cuda', torch.cuda.is_available())",
     ),
     "robomimic": EnvSpec(
@@ -55,6 +57,7 @@ ENVS = {
 _SCRIPT = """#!/usr/bin/env bash
 # Written by Relay-D. Builds the {fmt} environment (safe to run again) and records how it ended.
 rm -f {exit_file}
+echo $$ > {pid_file}
 trap 'interrupted=1' INT
 {{
 echo "Relay-D: {fmt} environment in {env_dir}"
@@ -82,6 +85,23 @@ def _paths(env_dir: Path):
     return env_dir.with_name(env_dir.name + ".setup.log"), env_dir.with_name(env_dir.name + ".setup.exit")
 
 
+def _pid_file(env_dir: Path) -> Path:
+    return Path(env_dir).with_name(Path(env_dir).name + ".setup.pid")
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:  # a killed script nobody waited for stays a zombie: it does not run any more
+        return Path(f"/proc/{pid}/stat").read_text().rpartition(")")[2].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
+
+
 def build_script(fmt: str, env_dir: Path, uv: Optional[str], base_python: str) -> str:
     """The bash script that makes ``env_dir`` (if it is not there yet) and installs the packages of ``fmt`` into it."""
     q, spec = shlex.quote, ENVS[fmt]
@@ -97,7 +117,8 @@ def build_script(fmt: str, env_dir: Path, uv: Optional[str], base_python: str) -
     steps = [f"[ -x {py} ] && echo 'environment exists, updating it' || {{ echo {q('$ ' + create)}; {create} || exit 1; }}"]
     steps += [f"echo {q('$ ' + cmd)}\n{cmd} || exit 1" for cmd in [install(a) for a in spec.installs] + [check]]
     log, exit_file = _paths(env_dir)
-    return _SCRIPT.format(fmt=fmt, env_dir=q(str(env_dir)), steps="\n".join(steps), log=q(str(log)), exit_file=q(str(exit_file)))
+    return _SCRIPT.format(fmt=fmt, env_dir=q(str(env_dir)), steps="\n".join(steps), log=q(str(log)), exit_file=q(str(exit_file)),
+                          pid_file=q(str(_pid_file(env_dir))))
 
 
 def status(env_dir: Path) -> str:
@@ -106,8 +127,12 @@ def status(env_dir: Path) -> str:
     if not exit_file.exists():
         if not log.exists():
             return "missing"
-        # the log grows while it works; one silent for a quarter of an hour belongs to a process that was killed
-        return "running" if time.time() - log.stat().st_mtime < _STALE_SECONDS else "failed"
+        # pip prints no progress into a pipe, so a long download leaves the log silent: ask the script's process.
+        # Without a pid file (the script has not started yet), a log silent for a quarter of an hour belongs to a killed one.
+        try:
+            return "running" if _alive(int(_pid_file(env_dir).read_text())) else "failed"
+        except (OSError, ValueError):
+            return "running" if time.time() - log.stat().st_mtime < _STALE_SECONDS else "failed"
     code = exit_file.read_text().strip()
     return "ready" if code == "0" and env_python(env_dir).exists() else "failed"
 
@@ -134,18 +159,17 @@ def log_tail(env_dir: Path, lines: int = 12) -> str:
 
 
 def start(fmt: str, env_dir: Optional[Path] = None, terminal: bool = True) -> Path:
-    """Start building (or updating) the environment of ``fmt``. The process belongs to its terminal (or its own session)."""
+    """Start building (or updating) the environment of ``fmt``. The process belongs to its terminal (or its own session).
+    A build that is still running is left alone: a second one in the same folder would corrupt it."""
     env_dir = Path(env_dir or default_env_dir(fmt))
+    if status(env_dir) == "running":
+        return env_dir
     env_dir.parent.mkdir(parents=True, exist_ok=True)
     log, exit_file = _paths(env_dir)
-    for f in (log, exit_file):
+    for f in (log, exit_file, _pid_file(env_dir)):
         f.unlink(missing_ok=True)
     log.touch()  # "running" from now on
     script = env_dir.with_name(env_dir.name + ".setup.sh")
     script.write_text(build_script(fmt, env_dir, shutil.which("uv"), sys.executable))
-    title = f"Relay-D: {fmt} setup"
-    opened = launcher._open_terminal(launcher._terminal_candidates(title, ["bash", str(script)])) if terminal else None
-    if opened is None:  # no display, no working terminal, or not wanted: run in the background
-        subprocess.Popen(["bash", str(script)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+    launcher.run_script(script, f"Relay-D: {fmt} setup", terminal)
     return env_dir

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (audit)
+- **Action dispatcher:** a `mapping` that does not fit its message (a wrong field name or index) now stops startup; before, the first tick sent the other entries (the arm) and skipped that one (the gripper). An output that is not finite
+  after its `transform` (a `scale` with `in_min == in_max`) skips the whole tick instead of being published.
+- **Environment setup:** a build that is still running is recognised by its process (`<env>.setup.pid`), not by how recently its log grew (pip prints nothing into a pipe, so a long download looked "failed" after 15 minutes and a second
+  build could start in the same folder). `lerobot` is pinned to the release the launcher's module path and flags were written for (`envsetup.LEROBOT_VERSION`).
+
+### Changed (audit)
+- `DataRecorder`'s message-to-sample encoding moved to `ui/record/message_encoding.py`; the ROS-free helpers of `ObsBuilder` (`inputs_in_sync`, `quat_to_rot_matrix`, `strip_trig`, `read_scalar`) moved to `utils/numerics.py` and are tested;
+  `launcher.run_script` is the one place that starts a script in a terminal (training and environment setup).
+
 ### Changed (pages)
 - **Record page without a config:** opening the Record page (sidebar button, or "Page shown at start") with no config loaded shows "Load a config before recording ..." and opens the Configuration page instead; the empty Record page itself
   says what to do, and pressing Start without a config now explains why nothing happens (it only logged before).

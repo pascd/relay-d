@@ -25,7 +25,8 @@ def test_scripts_quote_paths_skip_an_existing_env_and_are_valid_bash(tmp_path, f
 def test_package_lists_differ_per_format(tmp_path):
     lerobot = envsetup.build_script("lerobot", tmp_path / "l", "/usr/bin/uv", "python3")
     robomimic = envsetup.build_script("robomimic", tmp_path / "r", "/usr/bin/uv", "python3")
-    assert "'lerobot[training]' 'lerobot[diffusion]'" in lerobot and "robomimic" not in lerobot.replace("Relay-D", "")
+    v = envsetup.LEROBOT_VERSION  # pinned: launcher.py hard-codes this release's module and flags
+    assert f"'lerobot[training]=={v}' 'lerobot[diffusion]=={v}'" in lerobot and "robomimic" not in lerobot.replace("Relay-D", "")
     assert f"git+https://github.com/ARISE-Initiative/robomimic.git@{envsetup.ROBOMIMIC_COMMIT}" in robomimic
     assert "--no-deps" in robomimic and "diffusers==0.11.1" in robomimic and "torch torchvision" in robomimic
     assert "import robomimic.scripts.train" in robomimic
@@ -67,6 +68,26 @@ def test_status_follows_the_files(tmp_path):
     assert envsetup.status(env) == "ready"
     exit_file.write_text("1\n")
     assert envsetup.status(env) == "failed" and envsetup.log_tail(env, 1) == "downloading torch"
+
+
+def test_a_silent_log_of_a_live_build_is_still_running_and_is_not_started_twice(tmp_path, monkeypatch):
+    env = tmp_path / "lerobot"
+    log, _ = envsetup._paths(env)
+    log.write_text("downloading torch\n")
+    old = time.time() - 2 * envsetup._STALE_SECONDS  # pip prints nothing into a pipe: the log stays silent
+    os.utime(log, (old, old))
+    envsetup._pid_file(env).write_text(str(os.getpid()))  # a live process
+    assert envsetup.status(env) == "running"
+    started = []
+    monkeypatch.setattr(envsetup.launcher, "run_script", lambda *a: started.append(a))
+    envsetup.start("lerobot", env)
+    assert started == [] and log.read_text() == "downloading torch\n"  # left alone: a second build would corrupt the venv
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    envsetup._pid_file(env).write_text(str(dead.pid))
+    assert envsetup.status(env) == "failed"  # the script's process is gone
+    envsetup.start("lerobot", env)
+    assert len(started) == 1 and not envsetup._pid_file(env).exists()
 
 
 def test_python_for_prefers_the_setting_then_the_built_environment(tmp_path, monkeypatch, settings_file):

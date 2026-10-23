@@ -27,7 +27,14 @@ from tf2_ros import Buffer
 
 from rosidl_runtime_py.utilities import get_message
 from relay_d.utils.config_loader import load_yaml_config
-from relay_d.utils.numerics import normalize, quat_to_euler
+from relay_d.utils.numerics import (
+    inputs_in_sync,
+    normalize,
+    quat_to_euler,
+    quat_to_rot_matrix,
+    read_scalar,
+    strip_trig,
+)
 from relay_d.utils.qos import subscription_qos
 from relay_d.utils.ros_media_codec import decode_image, decode_organized_pointcloud
 from relay_d.utils.tf_topic import _TfTopicListener, get_or_create_tf_buffer
@@ -70,8 +77,6 @@ def _get_specs(stream_def) -> List[str]:
 # Spec parsing helpers
 # ---------------------------------------------------------------------------
 
-_TRIG_OPS = {"sin": np.sin, "cos": np.cos}
-
 _BIN_OPS = {
     "+": operator.add,
     "-": operator.sub,
@@ -85,43 +90,6 @@ _BIN_OPS = {
 _BINOP_RE = re.compile(r"^(.+?)\s+([+\-*/])\s+(.+)$")
 
 
-def _strip_trig(spec: str):
-    """Strip a sin(...)/cos(...) wrapper that encloses the WHOLE spec.
-
-    Returns (math_op | None, inner_spec).
-
-    Paren-balanced on purpose: "sin(a.x - b.x)" IS a wrapper (its opening
-    paren closes on the last char), but "sin(a.x) - cos(b.x)" is NOT (the
-    first paren closes early) and must fall through to arithmetic parsing
-    instead of being corrupted by a naive startswith/endswith check.
-    """
-    for name, fn in _TRIG_OPS.items():
-        prefix = name + "("
-        if spec.startswith(prefix) and spec.endswith(")"):
-            depth = 0
-            for i, ch in enumerate(spec[len(name):], start=len(name)):
-                if ch == "(":
-                    depth += 1
-                elif ch == ")":
-                    depth -= 1
-                    if depth == 0:
-                        if i == len(spec) - 1:
-                            return fn, spec[len(prefix):-1].strip()
-                        break   # closes early -> not an enclosing wrapper
-    return None, spec
-
-
-def _read_scalar(getter, msg, math_op) -> float:
-    """Extract exactly one float from `msg` via `getter`, applying optional trig.
-
-    np.asarray(...).reshape(-1)[0]: robust to numpy>=2.0, which raises on
-    float() of a 1-element ndarray (e.g. a static input's `.data` field,
-    always stored as an ndarray).
-    """
-    v = float(np.asarray(getter(msg)).reshape(-1)[0])
-    return float(math_op(v)) if math_op is not None else v
-
-
 # ---------------------------------------------------------------------------
 # Input synchronization
 # ---------------------------------------------------------------------------
@@ -131,21 +99,6 @@ def _stamp_to_seconds(stamp) -> float:
     return stamp.sec + stamp.nanosec * 1e-9
 
 
-def _inputs_in_sync(names, timestamps, threshold: Optional[float]) -> bool:
-    """True if the given inputs' timestamps all fall within `threshold` seconds
-    of each other.
-
-    Always True when threshold is None (sync check disabled) or fewer than
-    two of `names` have a recorded timestamp (nothing to compare).
-    """
-    if threshold is None:
-        return True
-    ts = [timestamps[n] for n in names if n in timestamps]
-    if len(ts) < 2:
-        return True
-    return (max(ts) - min(ts)) <= threshold
-
-
 # ---------------------------------------------------------------------------
 # Quaternion helpers
 # ---------------------------------------------------------------------------
@@ -153,15 +106,6 @@ def _inputs_in_sync(names, timestamps, threshold: Optional[float]) -> bool:
 def _quat_to_euler(x: float, y: float, z: float, w: float):
     """Quaternion (x,y,z,w) -> (roll, pitch, yaw) radians, ZYX convention."""
     return tuple(quat_to_euler([x, y, z, w]))
-
-
-def _quat_to_rot_matrix(x: float, y: float, z: float, w: float) -> np.ndarray:
-    """Quaternion (x,y,z,w) -> 3x3 rotation matrix."""
-    return np.array([
-        [1 - 2*(y*y + z*z),     2*(x*y - w*z),     2*(x*z + w*y)],
-        [    2*(x*y + w*z), 1 - 2*(x*x + z*z),     2*(y*z - w*x)],
-        [    2*(x*z - w*y),     2*(y*z + w*x), 1 - 2*(x*x + y*y)],
-    ], dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +128,7 @@ def _make_enriched_tf(tf_stamped) -> types.SimpleNamespace:
     roll, pitch, yaw = _quat_to_euler(qx, qy, qz, qw)
     euler = types.SimpleNamespace(roll=roll, pitch=pitch, yaw=yaw)
 
-    R = _quat_to_rot_matrix(qx, qy, qz, qw)
+    R = quat_to_rot_matrix(qx, qy, qz, qw)
     rot_matrix = types.SimpleNamespace(
         r00=R[0, 0], r01=R[0, 1], r02=R[0, 2],
         r10=R[1, 0], r11=R[1, 1], r12=R[1, 2],
@@ -414,7 +358,7 @@ class ObsBuilder(Node):
 
                 # sin() / cos() wrapper — only when it encloses the whole spec,
                 # so "sin(a.x) - cos(b.x)" falls through to arithmetic parsing.
-                math_op, spec = _strip_trig(spec)
+                math_op, spec = strip_trig(spec)
 
                 # zero:N sentinel
                 if spec.startswith("zero:"):
@@ -496,7 +440,7 @@ class ObsBuilder(Node):
                     f"operation per spec is supported (chained expression on the "
                     f"{label} side: '{side_txt}')."
                 )
-            side_op, side_spec = _strip_trig(side_txt)
+            side_op, side_spec = strip_trig(side_txt)
             inp, getter, is_slice, side_op = self._parse_atomic(
                 obs_name, raw_spec, side_spec, side_op
             )
@@ -713,7 +657,7 @@ class ObsBuilder(Node):
 
         for obs_name, entries in self._extractors.items():
             input_names = self._obs_input_names[obs_name]
-            if not _inputs_in_sync(input_names, ts_snapshot, self._sync_threshold):
+            if not inputs_in_sync(input_names, ts_snapshot, self._sync_threshold):
                 self._warn_desync(obs_name, input_names, ts_snapshot)
                 continue   # sample-and-hold: leave self._latest[obs_name] untouched
 
@@ -734,8 +678,8 @@ class ObsBuilder(Node):
                         ok = False
                         break
                     try:
-                        v = float(op_func(_read_scalar(l_get, l_raw, l_op),
-                                           _read_scalar(r_get, r_raw, r_op)))
+                        v = float(op_func(read_scalar(l_get, l_raw, l_op),
+                                           read_scalar(r_get, r_raw, r_op)))
                         row.append(float(math_op(v)) if math_op is not None else v)
                     except Exception as exc:
                         self.get_logger().warn(
@@ -760,7 +704,7 @@ class ObsBuilder(Node):
                         else:
                             row.extend(float(v) for v in vals)
                     else:
-                        row.append(_read_scalar(payload, raw, math_op))
+                        row.append(read_scalar(payload, raw, math_op))
                 except Exception as exc:
                     self.get_logger().warn(
                         f"Extraction failed for obs '{obs_name}' input '{inp_name}': {exc}"
@@ -782,7 +726,7 @@ class ObsBuilder(Node):
         # Passthrough obs (camera/organized-pointcloud): the decoded array is
         # used as-is — no flatten, no float32 cast, no normalization/rotation.
         for obs_name, input_name in self._passthrough_obs.items():
-            if not _inputs_in_sync({input_name}, ts_snapshot, self._sync_threshold):
+            if not inputs_in_sync({input_name}, ts_snapshot, self._sync_threshold):
                 self._warn_desync(obs_name, {input_name}, ts_snapshot)
                 continue
             arr = snapshot.get(input_name)

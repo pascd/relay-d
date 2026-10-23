@@ -59,6 +59,7 @@ _STUBBED = [
     "geometry_msgs.msg", "std_msgs", "std_msgs.msg", "sensor_msgs_py", "relay_d.utils.ros_media_codec",
 ]
 _MODULE = "relay_d.acquisition.qt_app.ui.record.data_recorder"
+_ENCODING = "relay_d.acquisition.qt_app.ui.record.message_encoding"  # imports the message packages too
 
 
 class _Node:
@@ -76,6 +77,8 @@ def recorder_cls(monkeypatch):
     node_mod = types.ModuleType("rclpy.node")
     node_mod.Node = _Node
     monkeypatch.setitem(sys.modules, "rclpy.node", node_mod)
-    monkeypatch.delitem(sys.modules, _MODULE, raising=False)
+    for name in (_MODULE, _ENCODING):
+        monkeypatch.delitem(sys.modules, name, raising=False)
     yield importlib.import_module(_MODULE).DataRecorder
-    sys.modules.pop(_MODULE, None)
+    for name in (_MODULE, _ENCODING):
+        sys.modules.pop(name, None)

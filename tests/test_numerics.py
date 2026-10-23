@@ -10,7 +10,14 @@ from relay_d.acquisition.qt_app.ui.postprocess.yaml_driven_converter import (
     YAMLDrivenConverter,
     _apply_normalization,
 )
-from relay_d.utils.numerics import normalize, quat_to_euler
+from relay_d.utils.numerics import (
+    inputs_in_sync,
+    normalize,
+    quat_to_euler,
+    quat_to_rot_matrix,
+    read_scalar,
+    strip_trig,
+)
 
 
 def test_normalize_maps_range_and_leaves_degenerate_range_alone():
@@ -33,6 +40,36 @@ def test_quat_to_euler_known_rotations():
     q = np.array([[0, 0, 0, 1], [0, 0, s, s], [s, 0, 0, s]], dtype=np.float64)  # id, yaw 90, roll 90
     rpy = quat_to_euler(q)
     assert np.allclose(rpy, [[0, 0, 0], [0, 0, np.pi / 2], [np.pi / 2, 0, 0]])
+
+
+def test_inputs_in_sync():
+    ts = {"a": 1.00, "b": 1.04, "c": 2.0}
+    assert inputs_in_sync(["a", "b"], ts, 0.05)
+    assert not inputs_in_sync(["a", "b"], ts, 0.03)
+    assert not inputs_in_sync(["a", "b", "c"], ts, 0.05)
+    assert inputs_in_sync(["a", "c"], ts, None)  # check disabled
+    assert inputs_in_sync(["a", "missing"], ts, 0.0)  # fewer than two timestamps: nothing to compare
+
+
+def test_quat_to_rot_matrix_known_rotation():
+    s = np.sqrt(0.5)
+    assert np.allclose(quat_to_rot_matrix(0, 0, 0, 1), np.eye(3))
+    assert np.allclose(quat_to_rot_matrix(0, 0, s, s), [[0, -1, 0], [1, 0, 0], [0, 0, 1]])  # yaw 90
+
+
+def test_strip_trig_only_strips_a_wrapper_around_the_whole_spec():
+    fn, inner = strip_trig("sin(a.x - b.x)")
+    assert fn is np.sin and inner == "a.x - b.x"
+    assert strip_trig("sin(a.x) - cos(b.x)") == (None, "sin(a.x) - cos(b.x)")  # first paren closes early
+    assert strip_trig("a.x") == (None, "a.x")
+
+
+def test_read_scalar_takes_one_float_and_applies_trig():
+    from types import SimpleNamespace
+
+    msg = SimpleNamespace(data=np.array([0.0]))  # a 1-element array: float() of it fails on numpy 2
+    assert read_scalar(lambda m: m.data, msg, None) == 0.0
+    assert read_scalar(lambda m: m.data, msg, np.cos) == 1.0
 
 
 @pytest.fixture

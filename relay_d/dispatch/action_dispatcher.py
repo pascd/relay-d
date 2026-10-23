@@ -237,6 +237,7 @@ class ActionDispatcher:
                         f"Result/Feedback shapes vary per action type)."
                     )
                 action_class = get_action(cfg["action_type"])
+                self._check_mapping(name, cfg, action_class.Goal)
                 self._goal_classes[name] = action_class.Goal
                 self._action_clients[name] = ActionClient(
                     node, action_class, cfg["topic"]
@@ -259,6 +260,7 @@ class ActionDispatcher:
                         f"[ActionDispatcher] '{name}' is missing 'msg_type'."
                     )
                 msg_class = get_message(cfg["msg_type"])
+                self._check_mapping(name, cfg, msg_class)
                 self._msg_classes[name] = msg_class
                 self._publishers[name] = node.create_publisher(
                     msg_class, cfg["topic"], 10
@@ -316,6 +318,10 @@ class ActionDispatcher:
                 transformed = self._apply_transform(slice_values, cfg["transform"])
             else:
                 transformed = slice_values
+            values = list(transformed.values()) if isinstance(transformed, dict) else transformed
+            if not np.isfinite(values).all():  # e.g. a `scale` transform with in_min == in_max
+                logger.error(f"[ActionDispatcher] '{name}' output is not finite after its transform, not dispatching: {transformed}")
+                return
             outputs.append((name, cfg, transformed))
 
         # Phase 2: send.
@@ -358,6 +364,23 @@ class ActionDispatcher:
     # -------------------------------------------------------------------------
     # Private
     # -------------------------------------------------------------------------
+
+    def _check_mapping(self, name: str, cfg: dict, msg_class: Any) -> None:
+        """Fill one message of ``msg_class`` with dummy values, so a broken ``mapping`` / ``goal_init``
+        stops startup. Found at the first tick it would send the other entries (the arm) without this one."""
+        values = np.zeros(len(cfg["indices"]), dtype=np.float32)
+        if "limits" in cfg and cfg.get("denormalize", cfg.get("apply_limits", True)):
+            values = self._apply_limits(values, cfg["limits"], cfg.get("normalized_range", [-1.0, 1.0]))
+        if "transform" in cfg:
+            with np.errstate(all="ignore"):
+                values = self._apply_transform(values, cfg["transform"])
+            if isinstance(values, np.ndarray):
+                values = np.nan_to_num(values)  # only the field names and indices are checked here
+        msg = msg_class()
+        if "goal_init" in cfg:
+            self._init_goal(msg, cfg["goal_init"], name)
+        if not _fill_msg(msg, cfg, values, self._node):
+            raise ValueError(f"[ActionDispatcher] '{name}': 'mapping' does not fit {msg_class.__name__} (see the warnings above).")
 
     def _dispatch_command(
         self, name: str, cfg: dict, cmd: str

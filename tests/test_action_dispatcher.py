@@ -77,3 +77,23 @@ def test_dispatch_sends_nothing_if_one_entry_cannot_be_computed(d):
     d._dispatch_topic = lambda *a: pytest.fail("arm must not move while the tool entry is broken")
     with pytest.raises(ValueError):
         d.dispatch(np.array([1.0]))
+
+
+def test_check_mapping_rejects_a_field_the_message_does_not_have(d):
+    from types import SimpleNamespace
+
+    msg_class = lambda: SimpleNamespace(x=0.0)  # noqa: E731
+    d._node = None  # the message has no header, so the clock is never asked
+    d._check_mapping("arm", {"indices": [0, 1], "mapping": {"x": 0}}, msg_class)
+    with pytest.raises(ValueError):
+        d._check_mapping("arm", {"indices": [0, 1], "mapping": {"x": 0, "typo": 1}}, msg_class)  # would move the arm, skip the rest
+
+
+def test_dispatch_sends_nothing_if_a_transform_gives_nan(d):
+    d._action_configs = {
+        "arm": {"indices": [0], "topic": "/arm"},
+        "tool": {"indices": [0], "transform": {"type": "scale", "in_min": 1, "in_max": 1, "out_min": 0, "out_max": 1}},
+    }
+    d._last_sent, d._procs = {}, {}
+    d._dispatch_topic = lambda *a: pytest.fail("nothing may be sent when one output is NaN")
+    d.dispatch(np.array([1.0]))

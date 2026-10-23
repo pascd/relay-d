@@ -381,6 +381,16 @@ def _open_terminal(candidates: List[List[str]]) -> Optional[str]:
     return None
 
 
+def run_script(script: Path, title: str, terminal: bool = True) -> Optional[str]:
+    """Run ``bash script`` in its own terminal window, else detached in the background (no display, no working terminal,
+    or ``terminal`` False). Returns the terminal's name, or None for the background. Raises OSError if bash cannot start."""
+    opened = _open_terminal(_terminal_candidates(title, ["bash", str(script)])) if terminal else None
+    if opened is None:
+        subprocess.Popen(["bash", str(script)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    return opened
+
+
 def new_run_dir(base: Path, fmt: str) -> Path:
     stem = f"{fmt}_{time.strftime('%Y%m%d_%H%M%S')}"
     run_dir, n = base / RUNS_DIRNAME / stem, 1
@@ -417,13 +427,10 @@ def start(job: TrainJob, terminal: bool = True) -> Path:
         "terminal": None,
     }
     (run_dir / "run.json").write_text(json.dumps(meta, indent=4))
-    meta["terminal"] = _open_terminal(_terminal_candidates(run_dir.name, ["bash", str(script)])) if terminal else None
-    if meta["terminal"] is None:  # no display, no working terminal, or not wanted: run in the background
-        try:
-            subprocess.Popen(["bash", str(script)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
-        except OSError as e:
-            raise TrainingError(f"could not start the run: {e}") from None
+    try:
+        meta["terminal"] = run_script(script, run_dir.name, terminal)
+    except OSError as e:
+        raise TrainingError(f"could not start the run: {e}") from None
     (run_dir / "run.json").write_text(json.dumps(meta, indent=4))
     return run_dir
 

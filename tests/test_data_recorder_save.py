@@ -80,7 +80,7 @@ def test_changing_the_recordings_folder_starts_a_new_session_folder(recorder_cls
 
 def test_a_message_that_breaks_a_processor_is_skipped_not_raised(recorder_cls):
     """The one try/except in _process_message_for_recording covers every per-type helper."""
-    module = sys.modules[recorder_cls.__module__]
+    module = sys.modules[recorder_cls.__module__.replace(".data_recorder", ".message_encoding")]
     for name in ("Image", "CompressedImage", "PointCloud2", "JointState", "PoseStamped", "Twist",
                  "TransformStamped", "String", "Float32", "Float64", "Int32", "Bool"):
         setattr(module, name, type(name, (), {}))  # the module's message classes are MagicMocks in this test
@@ -92,3 +92,19 @@ def test_a_message_that_breaks_a_processor_is_skipped_not_raised(recorder_cls):
     twist.angular = types.SimpleNamespace(x=0.0, y=0.0, z=0.5)
     assert rec._process_message_for_recording(twist, "cmd") == {
         "type": "twist", "linear": [1.0, 2.0, 3.0], "angular": [0.0, 0.0, 0.5]}
+
+
+def test_the_inputs_modality_reaches_the_image_decoder(recorder_cls):
+    module = sys.modules[recorder_cls.__module__.replace(".data_recorder", ".message_encoding")]
+    for name in ("Image", "CompressedImage", "PointCloud2", "JointState"):
+        setattr(module, name, type(name, (), {}))  # isinstance() needs real classes, the stubs are MagicMocks
+    calls = []
+    module.decode_image = lambda msg, is_depth: calls.append(is_depth) or np.zeros((1, 1), np.uint8)
+    rec = recorder_cls(types.SimpleNamespace(is_loaded=lambda: False, yaml_data=None))
+    rec._modalities = {"depth_cam": "depth", "rgb_cam": "rgb"}
+    msg = module.Image()
+    msg.encoding, msg.width, msg.height = "16UC1", 1, 1
+    msg.header = types.SimpleNamespace(stamp=types.SimpleNamespace(sec=0, nanosec=0), frame_id="f")
+    for cid in ("depth_cam", "rgb_cam", "unlisted"):
+        assert rec._process_message_for_recording(msg, cid)["type"] == "image"
+    assert calls == [True, False, False]

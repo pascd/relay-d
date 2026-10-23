@@ -64,7 +64,7 @@ SETTINGS: Tuple[Setting, ...] = (
     _s("rec_default_frequency", "Recording", "Default recording frequency (Hz)", "int", 30,
        "Used when the acquisition config has no recording_frequency.", minimum=1, maximum=1000),
     _s("rec_default_max_buffer_mb", "Recording", "Default memory buffer (MB)", "int", 4096,
-       "Samples stay in RAM until Stop; sampling stops at this size. Used when the config has no max_buffer_mb.",
+       "Samples stay in RAM until Stop (a crash before Stop loses the demo being recorded); sampling stops at this size. Used when the config has no max_buffer_mb.",
        minimum=64, maximum=1_000_000),
     _s("rec_default_sync_mode", "Recording", "Default sync mode", "choice", "soft",
        "soft: warn when inputs drift apart; strict: skip the sample. Used when the config has no sync_mode.",

@@ -11,12 +11,8 @@ import time
 import json
 from threading import Lock, Thread
 from collections import defaultdict
-from sensor_msgs.msg import Image, CompressedImage, PointCloud2, JointState
-from geometry_msgs.msg import PoseStamped, Twist, TransformStamped
-from std_msgs.msg import String, Float32, Float64, Int32, Bool
-from sensor_msgs_py import point_cloud2
 from datetime import datetime
-from relay_d.utils.ros_media_codec import decode_image, decode_organized_pointcloud
+from .message_encoding import encode_message
 
 def _sample_nbytes(sample: dict) -> int:
     """RAM held by one recorded sample: every array in it (image `data`, point cloud `points`, ...)."""
@@ -55,7 +51,8 @@ class DataRecorder(Node):
         if self.yaml_parser and self.yaml_parser.is_loaded():
             config = self.yaml_parser.yaml_data.get("config", {})
             self.recording_frequency = config.get("recording_frequency", self.recording_frequency)
-        # Samples live in RAM until Stop. Past this many bytes of frames the loop stops
+        # shortcut: samples live in RAM until Stop, so a crash loses the demo being recorded; upgrade to a journal or
+        # chunked HDF5 writes if demos get long enough for that to hurt. Past this many bytes of frames the loop stops
         # sampling (Stop still saves what is buffered) instead of running the PC out of memory.
         self._buffered_bytes = 0
         self._unsaved = False  # a save failed and the samples are still only in memory
@@ -607,191 +604,10 @@ class DataRecorder(Node):
 
     def _process_message_for_recording(self, msg, container_id=None):
         try:
-            if isinstance(msg, (Image, CompressedImage)):
-                return self._process_image_message(msg, container_id)
-            elif isinstance(msg, PointCloud2):
-                return self._process_pointcloud_message(msg, container_id)
-            elif isinstance(msg, JointState) or (
-                hasattr(msg, "name") and hasattr(msg, "position")
-                and hasattr(msg, "velocity") and hasattr(msg, "effort")
-                and hasattr(msg, "header")
-            ):
-                return self._process_joint_message(msg)
-            elif isinstance(msg, PoseStamped):
-                return self._process_pose_message(msg)
-            elif isinstance(msg, Twist):
-                return self._process_twist_message(msg)
-            elif isinstance(msg, TransformStamped):
-                return self._process_transform_stamped_message(msg)
-            elif isinstance(msg, (String, Float32, Float64, Int32, Bool)):
-                return self._process_simple_message(msg)
-            else:
-                return self._process_generic_message(msg)
-
+            return encode_message(msg, self._modalities.get(container_id))
         except Exception as e:
             logger.error(f"Error processing {type(msg).__name__} for recording ({container_id}): {e}")
             return None
-
-    def _process_image_message(self, img_msg, container_id=None):
-        if isinstance(img_msg, CompressedImage):
-            return {
-                "type": "compressed_image",
-                "format": img_msg.format,
-                "data": np.frombuffer(img_msg.data, np.uint8),
-                "header": {
-                    "stamp": img_msg.header.stamp.sec * 1000000000
-                    + img_msg.header.stamp.nanosec,
-                    "frame_id": img_msg.header.frame_id,
-                },
-            }
-        else:
-            is_depth = self._modalities.get(container_id) == "depth"
-            cv_image = decode_image(img_msg, is_depth=is_depth)
-            if cv_image is None:
-                return None
-            return {
-                "type": "image",
-                "encoding": img_msg.encoding,
-                "width": img_msg.width,
-                "height": img_msg.height,
-                "data": cv_image,
-                "header": {
-                    "stamp": img_msg.header.stamp.sec * 1000000000
-                    + img_msg.header.stamp.nanosec,
-                    "frame_id": img_msg.header.frame_id,
-                },
-            }
-
-    def _process_pointcloud_message(self, pc_msg, container_id=None):
-        field_names = [field.name for field in pc_msg.fields]
-        wants_scan = self._modalities.get(container_id) == "scan"
-        is_scan_raster = pc_msg.height > 1 and wants_scan
-
-        if is_scan_raster:
-            points = decode_organized_pointcloud(pc_msg)
-            if points is None:
-                return None
-        else:
-            raw = list(
-                point_cloud2.read_points(
-                    pc_msg, field_names=field_names, skip_nans=True
-                )
-            )
-            points = np.array(raw) if raw else np.array([])
-
-        return {
-            "type": "pointcloud",
-            "organized": is_scan_raster,
-            "width": pc_msg.width,
-            "height": pc_msg.height,
-            "fields": field_names,
-            "points": points,
-            "header": {
-                "stamp": pc_msg.header.stamp.sec * 1000000000
-                + pc_msg.header.stamp.nanosec,
-                "frame_id": pc_msg.header.frame_id,
-            },
-        }
-
-    def _process_joint_message(self, joint_msg):
-        names = list(joint_msg.name) if joint_msg.name else []
-        positions = list(joint_msg.position) if joint_msg.position else []
-        velocities = list(joint_msg.velocity) if joint_msg.velocity else []
-        efforts = list(joint_msg.effort) if joint_msg.effort else []
-
-        positions = [float(p) for p in positions] if positions else []
-        velocities = [float(v) for v in velocities] if velocities else []
-        efforts = [float(e) for e in efforts] if efforts else []
-
-        return {
-            "type": "joint_state",
-            "names": names,
-            "positions": positions,
-            "velocities": velocities,
-            "efforts": efforts,
-            "header": {
-                "stamp": joint_msg.header.stamp.sec * 1000000000
-                + joint_msg.header.stamp.nanosec,
-                "frame_id": joint_msg.header.frame_id,
-            },
-        }
-
-    def _process_pose_message(self, pose_msg):
-        return {
-            "type": "pose",
-            "position": [
-                pose_msg.pose.position.x,
-                pose_msg.pose.position.y,
-                pose_msg.pose.position.z,
-            ],
-            "orientation": [
-                pose_msg.pose.orientation.x,
-                pose_msg.pose.orientation.y,
-                pose_msg.pose.orientation.z,
-                pose_msg.pose.orientation.w,
-            ],
-            "header": {
-                "stamp": pose_msg.header.stamp.sec * 1000000000
-                + pose_msg.header.stamp.nanosec,
-                "frame_id": pose_msg.header.frame_id,
-            },
-        }
-
-    def _process_twist_message(self, twist_msg):
-        return {
-            "type": "twist",
-            "linear": [twist_msg.linear.x, twist_msg.linear.y, twist_msg.linear.z],
-            "angular": [
-                twist_msg.angular.x,
-                twist_msg.angular.y,
-                twist_msg.angular.z,
-            ],
-        }
-
-    def _process_transform_stamped_message(self, transform_msg):
-        return {
-            "type": "transform_stamped",
-            "parent_frame": transform_msg.header.frame_id,
-            "child_frame": transform_msg.child_frame_id,
-            "translation": [
-                transform_msg.transform.translation.x,
-                transform_msg.transform.translation.y,
-                transform_msg.transform.translation.z,
-            ],
-            "rotation": [
-                transform_msg.transform.rotation.x,
-                transform_msg.transform.rotation.y,
-                transform_msg.transform.rotation.z,
-                transform_msg.transform.rotation.w,
-            ],
-            "header": {
-                "stamp": transform_msg.header.stamp.sec * 1000000000
-                + transform_msg.header.stamp.nanosec,
-                "frame_id": transform_msg.header.frame_id,
-            },
-        }
-
-    def _process_simple_message(self, msg):
-        return {
-            "type": type(msg).__name__.lower(),
-            "data": msg.data if hasattr(msg, "data") else str(msg),
-        }
-
-    def _process_generic_message(self, msg):
-        msg_data = {"type": type(msg).__name__, "fields": {}}
-
-        if hasattr(msg, "__slots__"):
-            for slot in msg.__slots__:
-                try:
-                    value = getattr(msg, slot)
-                    if isinstance(value, (int, float, str, bool)):
-                        msg_data["fields"][slot] = value
-                    else:
-                        msg_data["fields"][slot] = str(value)
-                except Exception:
-                    msg_data["fields"][slot] = "Error reading field"
-
-        return msg_data
 
     def _build_output_map_lookup(self) -> dict:
         """
